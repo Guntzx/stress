@@ -1,0 +1,2 @@
+test_type,request_name,iteration,start_time,end_time,duration_ms,success,status_code,response,error
+Single,Nueva petición,1,2025-07-10T21:15:59.780185Z,2025-07-10T21:15:59.867423Z,87,false,404,,"HTTP 404 Not Found: {""message"":""Cannot POST /"",""error"":""Not Found"",""statusCode"":404}"

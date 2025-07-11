@@ -1,0 +1,25 @@
+Source: test-stress
+Section: utils
+Priority: optional
+Maintainer: Yerko <@Guntzx>
+Build-Depends: debhelper (>= 11), rustc, cargo, pkg-config, libssl-dev, libgtk-3-dev, libwebkit2gtk-4.0-dev
+Standards-Version: 4.5.1
+
+Package: test-stress
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends}, libssl3, libgtk-3-0, libwebkit2gtk-4.0-37
+Description: Aplicación de pruebas de carga con interfaz gráfica
+ Test Stress es una aplicación completa de pruebas de carga escrita en Rust
+ que proporciona tanto una interfaz gráfica intuitiva como una línea de
+ comandos completa para automatización.
+ .
+ Características principales:
+  * Interfaz gráfica moderna con pestañas para pruebas individuales y suites
+  * Línea de comandos completa para automatización
+  * Múltiples métodos HTTP (GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS)
+  * Peticiones concurrentes configurables
+  * Guardado y carga de configuraciones para reutilizar pruebas
+  * Resultados detallados con tiempos promedio, mínimo y máximo
+  * Cancelación de pruebas en tiempo real
+  * Logs en tiempo real con limpieza automática
+  * Soporte multiplataforma 

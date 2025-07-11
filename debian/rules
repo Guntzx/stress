@@ -1,0 +1,21 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_install:
+	# Instalar el ejecutable
+	install -D -m 755 target/x86_64-unknown-linux-gnu/release/test-stress debian/test-stress/usr/bin/test-stress
+	
+	# Crear directorios de configuración
+	mkdir -p debian/test-stress/etc/test-stress
+	mkdir -p debian/test-stress/var/lib/test-stress/{configs,results,logs}
+	
+	# Crear archivo de configuración por defecto
+	install -D -m 644 debian/test-stress.default debian/test-stress/etc/default/test-stress || true
+	
+	# Crear archivo de servicio systemd (opcional)
+	install -D -m 644 debian/test-stress.service debian/test-stress/lib/systemd/system/test-stress.service || true
+
+override_dh_auto_build:
+	cargo build --release --target x86_64-unknown-linux-gnu 

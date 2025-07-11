@@ -1,0 +1,11 @@
+#!/bin/bash
+
+# Obtener el directorio de la aplicación
+APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+EXECUTABLE="$APP_DIR/MacOS/test-stress"
+
+# Crear directorios de configuración si no existen
+mkdir -p "$HOME/.test-stress"/{configs,results,logs}
+
+# Ejecutar la aplicación
+exec "$EXECUTABLE" --gui
