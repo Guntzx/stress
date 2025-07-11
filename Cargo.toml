@@ -60,3 +60,4 @@ open = "5.3"
 # Native file dialogs
 rfd = "0.13"
 dirs = "5.0" 
+umya-spreadsheet = "2.3.1"

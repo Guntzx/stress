@@ -87,6 +87,9 @@ pub struct TestStressApp {
     limit_warning_message: String,
     limit_warning_accept: bool,
     pending_action: Option<PendingAction>,
+
+    // Estado para mensajes de éxito del reporte
+    report_success_message: Option<String>,
 }
 
 // Acción pendiente tras advertencia
@@ -128,6 +131,7 @@ impl TestStressApp {
             limit_warning_message: String::new(),
             limit_warning_accept: false,
             pending_action: None,
+            report_success_message: None,
         };
         // Solo abrir terminal si la preferencia está activa y no hay terminal abierta
         if app.show_terminal {
@@ -1054,9 +1058,21 @@ impl TestStressApp {
             }
         }
         
+        // Mensaje de éxito del reporte
+        if let Some(msg) = &self.report_success_message {
+            ui.colored_label(egui::Color32::GREEN, msg);
+        }
         ui.horizontal(|ui| {
             if ui.button("📊 Generar Reporte").clicked() {
-                // TODO: Implementar generación de reporte
+                let output_dir = self.output_dir.clone();
+                match crate::report_generator::generate_excel_report(&output_dir) {
+                    Ok(path) => {
+                        self.report_success_message = Some(format!("Reporte Excel generado exitosamente en: {}", path));
+                    },
+                    Err(e) => {
+                        self.report_success_message = Some(format!("Error generando reporte: {}", e));
+                    }
+                }
             }
         });
     }

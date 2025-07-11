@@ -139,20 +139,21 @@ pub async fn delete_test_config(name: &str) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-pub async fn generate_report(results_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    info!("Generando reporte Excel");
-    
+pub fn generate_report(results_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let results_path = results_dir.to_string_lossy();
-    
     if !results_dir.exists() {
         return Err(format!("El directorio {} no existe", results_path).into());
     }
-    
-    generate_excel_report(&results_path).await?;
-    
-    println!("Reporte Excel generado exitosamente en: {}/excels", results_path);
-    
-    Ok(())
+    match crate::report_generator::generate_excel_report(&results_path) {
+        Ok(path) => {
+            println!("Reporte Excel generado exitosamente en: {}", path);
+            Ok(())
+        },
+        Err(e) => {
+            eprintln!("Error generando reporte: {}", e);
+            Err(e)
+        }
+    }
 }
 
 fn print_summary(summary: &crate::models::TestSummary) {

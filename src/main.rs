@@ -212,7 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             cli::delete_test_config(&name).await?;
         }
         Some(Commands::Report { results_dir }) => {
-            cli::generate_report(&results_dir).await?;
+            cli::generate_report(&results_dir)?;
         }
         None => {
             // Por defecto, abrir interfaz gráfica si no se especifica comando
