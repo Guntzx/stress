@@ -3,8 +3,14 @@
 Cargo.lock
 
 # Environment files
+.env
+.env.local
+.env.development
+.env.test
+.env.staging
 .env.qa
 .env.prod
+.env.production
 
 # IDE
 .vscode/
