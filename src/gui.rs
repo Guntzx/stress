@@ -93,6 +93,10 @@ pub struct TestStressApp {
     
     // Opción para generar reporte automáticamente
     auto_generate_report: bool,
+    
+    // Opción para subir automáticamente a carpeta remota
+    auto_upload_report: bool,
+    remote_folder_path: String,
 }
 
 // Acción pendiente tras advertencia
@@ -136,6 +140,8 @@ impl TestStressApp {
             pending_action: None,
             report_success_message: None,
             auto_generate_report: true, // Por defecto activado
+            auto_upload_report: false, // Por defecto desactivado
+            remote_folder_path: String::new(), // Por defecto vacío
         };
         // Solo abrir terminal si la preferencia está activa y no hay terminal abierta
         if app.show_terminal {
@@ -187,6 +193,8 @@ impl TestStressApp {
         let logs = Arc::clone(&self.logs);
         let results = Arc::clone(&self.results);
         let auto_generate_report = self.auto_generate_report;
+        let auto_upload_report = self.auto_upload_report;
+        let remote_folder_path = self.remote_folder_path.clone();
         
         // Crear canales para comunicación
         let (completion_sender, completion_receiver) = mpsc::channel();
@@ -215,6 +223,8 @@ impl TestStressApp {
                     progress_sender,
                     cancel_flag_clone,
                     auto_generate_report,
+                    auto_upload_report,
+                    remote_folder_path,
                 ).await {
                     eprintln!("Error ejecutando prueba: {}", e);
                 }
@@ -255,6 +265,8 @@ impl TestStressApp {
         let logs = Arc::clone(&self.logs);
         let results = Arc::clone(&self.results);
         let auto_generate_report = self.auto_generate_report;
+        let auto_upload_report = self.auto_upload_report;
+        let remote_folder_path = self.remote_folder_path.clone();
         
         // Crear canales para comunicación
         let (completion_sender, completion_receiver) = mpsc::channel();
@@ -271,7 +283,7 @@ impl TestStressApp {
             // Crear un runtime local para este thread
             let rt = tokio::runtime::Runtime::new().expect("Error creando runtime");
             rt.block_on(async {
-                if let Err(e) = Self::execute_suite_test_with_progress_and_cancel(&suite, logs, results, progress_sender, cancel_flag_clone, auto_generate_report).await {
+                if let Err(e) = Self::execute_suite_test_with_progress_and_cancel(&suite, logs, results, progress_sender, cancel_flag_clone, auto_generate_report, auto_upload_report, remote_folder_path).await {
                     eprintln!("Error ejecutando suite: {}", e);
                 }
                 // Notificar completación
@@ -295,6 +307,8 @@ impl TestStressApp {
         progress_sender: mpsc::Sender<f32>,
         cancel_flag: Arc<Mutex<bool>>,
         auto_generate_report: bool,
+        auto_upload_report: bool,
+        remote_folder_path: String,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Agregar log inicial
         {
@@ -324,8 +338,8 @@ impl TestStressApp {
         let summary = tester
             .run_single_test_with_progress_and_cancel(request, base_url, iterations, concurrent_requests, wait_time, &final_output_dir, progress_sender, cancel_flag)
             .await?;
-        // Guardar el nombre del CSV generado
-        let csv_file = PathBuf::from(format!("{}/{}_{}.csv", final_output_dir, request.description.replace(" ", "_"), chrono::Utc::now().format("%Y%m%d_%H%M%S")));
+        // Buscar el archivo CSV generado en el directorio
+        let csv_file = find_csv_file_in_directory(&final_output_dir, &request.description);
         {
             let mut results = results.lock().unwrap();
             results.push(summary);
@@ -353,19 +367,83 @@ impl TestStressApp {
             let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
             let safe_name = request.description.replace(" ", "_").replace("/", "_").replace("\\", "_");
             let excel_path = format!("{}/report_{}_{}.xlsx", reports_dir, safe_name, timestamp);
-            match generate_excel_report_from_files(&[csv_file], &excel_path) {
-                Ok(excel_path) => {
-                    let mut logs = logs.lock().unwrap();
-                    logs.push(format!("[{}] ✅ Reporte Excel generado exitosamente en: {}", 
-                        chrono::Local::now().format("%H:%M:%S"), 
-                        excel_path
-                    ));
+            match csv_file {
+                Some(csv_path) => {
+                    match generate_excel_report_from_files(&[csv_path.clone()], &excel_path) {
+                        Ok(excel_path) => {
+                            let mut logs = logs.lock().unwrap();
+                            logs.push(format!("[{}] ✅ Reporte Excel generado exitosamente en: {}", 
+                                chrono::Local::now().format("%H:%M:%S"), 
+                                excel_path
+                            ));
+                            // Subir archivos específicos de la prueba si está habilitado
+                            if auto_upload_report && !remote_folder_path.is_empty() {
+                                use std::path::Path;
+                                use std::fs;
+                                
+                                // Verificar que la carpeta de destino existe o crearla
+                                if !Path::new(&remote_folder_path).exists() {
+                                    if let Err(e) = fs::create_dir_all(&remote_folder_path) {
+                                        logs.push(format!("[{}] ❌ Error creando carpeta remota: {}", chrono::Local::now().format("%H:%M:%S"), e));
+                                        return Ok(());
+                                    }
+                                }
+                                
+                                // Crear carpeta específica para esta prueba
+                                let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+                                let safe_name = request.description.replace(" ", "_").replace("/", "_").replace("\\", "_");
+                                let test_folder_name = format!("test_{}_{}", safe_name, timestamp);
+                                let destination_folder = format!("{}/{}", remote_folder_path, test_folder_name);
+                                
+                                // Crear la carpeta de destino si no existe
+                                if !Path::new(&destination_folder).exists() {
+                                    if let Err(e) = fs::create_dir_all(&destination_folder) {
+                                        logs.push(format!("[{}] ❌ Error creando carpeta de destino: {}", chrono::Local::now().format("%H:%M:%S"), e));
+                                        return Ok(());
+                                    }
+                                }
+                                
+                                // Copiar solo los archivos específicos de esta prueba
+                                let mut copy_error = None;
+                                let mut files_copied = 0;
+                                
+                                // Copiar el archivo CSV
+                                if let Err(e) = fs::copy(&csv_path, format!("{}/{}", destination_folder, csv_path.file_name().unwrap_or_default().to_string_lossy())) {
+                                    copy_error = Some(e);
+                                } else {
+                                    files_copied += 1;
+                                }
+                                
+                                // Copiar el archivo Excel si se generó exitosamente
+                                if !copy_error.is_some() {
+                                    if let Err(e) = fs::copy(&excel_path, format!("{}/{}", destination_folder, Path::new(&excel_path).file_name().unwrap_or_default().to_string_lossy())) {
+                                        copy_error = Some(e);
+                                    } else {
+                                        files_copied += 1;
+                                    }
+                                }
+                                
+                                if let Some(e) = copy_error {
+                                    logs.push(format!("[{}] ❌ Error copiando archivos a carpeta remota: {}", chrono::Local::now().format("%H:%M:%S"), e));
+                                } else {
+                                    logs.push(format!("[{}] ✅ {} archivos de la prueba subidos exitosamente a: {}", chrono::Local::now().format("%H:%M:%S"), files_copied, destination_folder));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let mut logs = logs.lock().unwrap();
+                            logs.push(format!("[{}] ❌ Error generando reporte Excel: {}", 
+                                chrono::Local::now().format("%H:%M:%S"), 
+                                e
+                            ));
+                        }
+                    }
                 }
-                Err(e) => {
+                None => {
                     let mut logs = logs.lock().unwrap();
-                    logs.push(format!("[{}] ❌ Error generando reporte Excel: {}", 
+                    logs.push(format!("[{}] ❌ No se encontró el archivo CSV generado en el directorio: {}", 
                         chrono::Local::now().format("%H:%M:%S"), 
-                        e
+                        final_output_dir
                     ));
                 }
             }
@@ -381,6 +459,8 @@ impl TestStressApp {
         progress_sender: mpsc::Sender<f32>,
         cancel_flag: Arc<Mutex<bool>>,
         auto_generate_report: bool,
+        auto_upload_report: bool,
+        remote_folder_path: String,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Agregar log inicial
         {
@@ -452,6 +532,65 @@ impl TestStressApp {
                         chrono::Local::now().format("%H:%M:%S"), 
                         excel_path
                     ));
+                    
+                    // Subir archivos específicos de la suite si está habilitado
+                    if auto_upload_report && !remote_folder_path.is_empty() {
+                        use std::path::Path;
+                        use std::fs;
+                        
+                        // Verificar que la carpeta de destino existe o crearla
+                        if !Path::new(&remote_folder_path).exists() {
+                            if let Err(e) = fs::create_dir_all(&remote_folder_path) {
+                                logs.push(format!("[{}] ❌ Error creando carpeta remota: {}", chrono::Local::now().format("%H:%M:%S"), e));
+                                return Ok(());
+                            }
+                        }
+                        
+                        // Crear carpeta específica para esta suite
+                        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+                        let safe_name = suite.name.replace(" ", "_").replace("/", "_").replace("\\", "_");
+                        let suite_folder_name = format!("suite_{}_{}", safe_name, timestamp);
+                        let destination_folder = format!("{}/{}", remote_folder_path, suite_folder_name);
+                        
+                        // Crear la carpeta de destino si no existe
+                        if !Path::new(&destination_folder).exists() {
+                            if let Err(e) = fs::create_dir_all(&destination_folder) {
+                                logs.push(format!("[{}] ❌ Error creando carpeta de destino: {}", chrono::Local::now().format("%H:%M:%S"), e));
+                                return Ok(());
+                            }
+                        }
+                        
+                        // Copiar solo los archivos específicos de esta suite
+                        let mut copy_error = None;
+                        let mut files_copied = 0;
+                        
+                        // Copiar los archivos CSV de la suite
+                        for csv_file in &csv_files {
+                            if csv_file.exists() {
+                                if let Err(e) = fs::copy(csv_file, format!("{}/{}", destination_folder, csv_file.file_name().unwrap_or_default().to_string_lossy())) {
+                                    copy_error = Some(e);
+                                    break;
+                                } else {
+                                    files_copied += 1;
+                                }
+                            }
+                        }
+                        
+                        // Copiar el archivo Excel si se generó exitosamente
+                        if !copy_error.is_some() {
+                            if let Err(e) = fs::copy(&excel_path, format!("{}/{}", destination_folder, Path::new(&excel_path).file_name().unwrap_or_default().to_string_lossy())) {
+                                copy_error = Some(e);
+                            } else {
+                                files_copied += 1;
+                            }
+                        }
+                        
+                        if let Some(e) = copy_error {
+                            logs.push(format!("[{}] ❌ Error copiando archivos a carpeta remota: {}", chrono::Local::now().format("%H:%M:%S"), e));
+                        } else {
+                            logs.push(format!("[{}] ✅ {} archivos de la suite subidos exitosamente a: {}", chrono::Local::now().format("%H:%M:%S"), files_copied, destination_folder));
+                        }
+                    }
                 }
                 Err(e) => {
                     let mut logs = logs.lock().unwrap();
@@ -722,6 +861,29 @@ impl TestStressApp {
                 ui.colored_label(egui::Color32::RED, "⚠️ Debes especificar un directorio de salida antes de ejecutar la prueba.");
             }
             ui.checkbox(&mut self.auto_generate_report, "📊 Generar reporte Excel automáticamente después de la prueba");
+            
+            ui.separator();
+            ui.label("Subida a Carpeta Remota");
+            if ui.checkbox(&mut self.auto_upload_report, "📤 Subir archivos automáticamente a carpeta remota").changed() {
+                // La opción se guarda automáticamente en la estructura
+            }
+            ui.label("Se copiará toda la carpeta de la prueba (con Excel y CSV) a la carpeta especificada.");
+            
+            ui.horizontal(|ui| {
+                ui.label("Carpeta remota:");
+                ui.text_edit_singleline(&mut self.remote_folder_path);
+                if ui.button("📁 Seleccionar").clicked() {
+                    // Abrir selector de directorio nativo
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_title("Seleccionar carpeta remota")
+                        .pick_folder() {
+                        self.remote_folder_path = path.to_string_lossy().to_string();
+                    }
+                }
+            });
+            if self.auto_upload_report && self.remote_folder_path.trim().is_empty() {
+                ui.colored_label(egui::Color32::YELLOW, "⚠️ Debes especificar una carpeta remota para subir los archivos.");
+            }
         });
         
         // Configuración de la petición
@@ -944,6 +1106,29 @@ impl TestStressApp {
                 ui.colored_label(egui::Color32::RED, "⚠️ Debes especificar un directorio de salida antes de ejecutar la suite.");
             }
             ui.checkbox(&mut self.auto_generate_report, "📊 Generar reporte Excel automáticamente después de la suite");
+            
+            ui.separator();
+            ui.label("Subida a Carpeta Remota");
+            if ui.checkbox(&mut self.auto_upload_report, "📤 Subir archivos automáticamente a carpeta remota").changed() {
+                // La opción se guarda automáticamente en la estructura
+            }
+            ui.label("Se copiará toda la carpeta de la suite (con Excel y CSV) a la carpeta especificada.");
+            
+            ui.horizontal(|ui| {
+                ui.label("Carpeta remota:");
+                ui.text_edit_singleline(&mut self.remote_folder_path);
+                if ui.button("📁 Seleccionar").clicked() {
+                    // Abrir selector de directorio nativo
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_title("Seleccionar carpeta remota")
+                        .pick_folder() {
+                        self.remote_folder_path = path.to_string_lossy().to_string();
+                    }
+                }
+            });
+            if self.auto_upload_report && self.remote_folder_path.trim().is_empty() {
+                ui.colored_label(egui::Color32::YELLOW, "⚠️ Debes especificar una carpeta remota para subir los archivos.");
+            }
         });
         
         // Lista de peticiones
@@ -1210,5 +1395,49 @@ impl TestStressApp {
         if close_failed {
             ui.colored_label(egui::Color32::YELLOW, "No se pudo cerrar la terminal automáticamente. Ciérrala manualmente si es necesario.");
         }
+        
+        ui.separator();
+        ui.heading("Reportes y Archivos");
+        
+        if ui.checkbox(&mut self.auto_generate_report, "Generar reporte Excel automáticamente").changed() {
+            // La opción se guarda automáticamente en la estructura
+        }
+        ui.label("Si está activado, se generará automáticamente un reporte Excel después de cada prueba.");
+        
+        ui.separator();
+        ui.heading("Subida Automática a Carpeta Remota");
+        
+        if ui.checkbox(&mut self.auto_upload_report, "Subir archivos automáticamente a carpeta remota").changed() {
+            // La opción se guarda automáticamente en la estructura
+        }
+        ui.label("Si está activado, se copiará toda la carpeta de la prueba (con Excel y CSV) a la carpeta remota especificada.");
+        
+        ui.label("Ruta de la carpeta remota (OneDrive, Google Drive, Dropbox, etc.):");
+        ui.text_edit_singleline(&mut self.remote_folder_path);
+        ui.label("Ejemplo: /Users/tu_usuario/OneDrive/StressTests o C:\\Users\\tu_usuario\\OneDrive\\StressTests");
     }
-} 
+}
+
+// Función auxiliar para buscar archivos CSV en un directorio
+fn find_csv_file_in_directory(dir_path: &str, test_name: &str) -> Option<PathBuf> {
+    use std::fs;
+    use std::path::Path;
+    
+    if let Ok(entries) = fs::read_dir(dir_path) {
+        for entry in entries {
+            if let Ok(entry) = entry {
+                let path = entry.path();
+                if path.is_file() && path.extension().map_or(false, |ext| ext == "csv") {
+                    if let Some(file_name) = path.file_name() {
+                        let file_name_str = file_name.to_string_lossy();
+                        let safe_test_name = test_name.replace(" ", "_");
+                        if file_name_str.contains(&safe_test_name) {
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
