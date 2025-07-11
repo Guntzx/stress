@@ -2,7 +2,61 @@
 
 Aplicación de pruebas de carga multiplataforma (CLI y GUI)
 
-## Instalación por sistema operativo
+---
+
+## 🚀 Instalación y configuración para desarrolladores
+
+### Requisitos
+
+| Herramienta | Versión mínima | Enlace instalación           |
+|-------------|----------------|-----------------------------|
+| Rust        | 1.70           | https://rustup.rs/          |
+| Git         | Cualquiera     | https://git-scm.com/        |
+
+### 1. Clonar el repositorio
+```sh
+git clone https://github.com/Guntzx/stress.git
+cd stress
+```
+
+### 2. Instalar dependencias y preparar entorno
+```sh
+# Instala Rust si no lo tienes
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+
+# Configura archivos de entorno
+./setup.sh
+# O manualmente:
+cp env.qa.example .env.qa
+cp env.prod.example .env.prod
+# Edita las contraseñas en .env.qa y .env.prod
+```
+
+### 3. Compilar el proyecto
+```sh
+cargo build --release   # Para producción
+# o
+cargo build             # Para desarrollo
+```
+
+### 4. Ejecutar la aplicación
+
+- **Modo desarrollo (hot reload, debug):**
+  ```sh
+  cargo run -- --gui
+  # o solo CLI
+  cargo run -- --help
+  ```
+- **Modo producción (binario optimizado):**
+  ```sh
+  ./target/release/stress --gui
+  ./target/release/stress --help
+  ```
+
+---
+
+## Instalación por sistema operativo (usuarios finales)
 
 ### macOS
 
