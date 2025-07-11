@@ -6,26 +6,13 @@ use chrono::{DateTime, Utc};
 use crate::models::TestResult;
 use tracing::info;
 
-pub fn generate_excel_report(results_dir: &str) -> Result<String, Box<dyn std::error::Error>> {
-    info!("Generando reporte Excel desde: {:?}", results_dir);
+pub fn generate_excel_report_from_files(csv_files: &[PathBuf], excel_path: &str) -> Result<String, Box<dyn std::error::Error>> {
+    info!("Generando reporte Excel desde archivos: {:?}", csv_files);
     let mut book = umya_spreadsheet::new_file();
     
-    let mut all_results: Vec<TestResult> = Vec::new();
-    let mut csv_files = Vec::new();
-    
-    // Encontrar archivos CSV
-    for entry in fs::read_dir(results_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if let Some(ext) = path.extension() {
-            if ext == "csv" {
-                csv_files.push(path);
-            }
-        }
-    }
-    
     // Leer todos los resultados
-    for csv_path in &csv_files {
+    let mut all_results: Vec<TestResult> = Vec::new();
+    for csv_path in csv_files {
         let mut rdr = csv::Reader::from_path(csv_path)?;
         for result in rdr.deserialize() {
             let r: TestResult = result?;
@@ -69,10 +56,9 @@ pub fn generate_excel_report(results_dir: &str) -> Result<String, Box<dyn std::e
     summary_sheet.get_cell_mut((2, 8)).set_value(format!("{:.2}", success_rate));
     
     // Una hoja por cada archivo CSV
-    for csv_path in &csv_files {
+    for csv_path in csv_files {
         let file_name = csv_path.file_stem().unwrap().to_string_lossy();
         let sheet = book.new_sheet(file_name.to_string()).unwrap();
-        
         // Escribir encabezados
         let headers = [
             "Test Type", "Request Name", "Iteration", "Start Time", "End Time", 
@@ -81,7 +67,6 @@ pub fn generate_excel_report(results_dir: &str) -> Result<String, Box<dyn std::e
         for (i, h) in headers.iter().enumerate() {
             sheet.get_cell_mut(((i+1) as u32, 1)).set_value(*h);
         }
-        
         // Escribir filas
         let mut rdr = csv::Reader::from_path(csv_path)?;
         for (row, result) in rdr.deserialize().enumerate() {
@@ -99,9 +84,10 @@ pub fn generate_excel_report(results_dir: &str) -> Result<String, Box<dyn std::e
     }
     
     // Guardar el archivo Excel
-    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-    let excel_path = format!("{}/report_{}.xlsx", results_dir, timestamp);
-    writer::xlsx::write(&book, &excel_path)?;
+    if let Some(parent) = std::path::Path::new(excel_path).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    writer::xlsx::write(&book, excel_path)?;
     println!("Reporte Excel generado exitosamente en: {}", excel_path);
-    Ok(excel_path)
+    Ok(excel_path.to_string())
 } 

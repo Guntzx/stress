@@ -1,7 +1,7 @@
 use crate::config::{ensure_output_directory, get_output_directory, save_config, load_config, list_saved_configs, delete_config};
 use crate::load_test::LoadTester;
 use crate::models::{TestRequest, TestSuite, SavedConfig, TestSummary, HttpMethod, HttpHeader, QueryParameter};
-use crate::report_generator::generate_excel_report;
+use crate::report_generator::generate_excel_report_from_files;
 use eframe::egui;
 use std::fs;
 use std::path::PathBuf;
@@ -90,6 +90,9 @@ pub struct TestStressApp {
 
     // Estado para mensajes de éxito del reporte
     report_success_message: Option<String>,
+    
+    // Opción para generar reporte automáticamente
+    auto_generate_report: bool,
 }
 
 // Acción pendiente tras advertencia
@@ -132,6 +135,7 @@ impl TestStressApp {
             limit_warning_accept: false,
             pending_action: None,
             report_success_message: None,
+            auto_generate_report: true, // Por defecto activado
         };
         // Solo abrir terminal si la preferencia está activa y no hay terminal abierta
         if app.show_terminal {
@@ -182,6 +186,7 @@ impl TestStressApp {
         let output_dir = self.output_dir.clone();
         let logs = Arc::clone(&self.logs);
         let results = Arc::clone(&self.results);
+        let auto_generate_report = self.auto_generate_report;
         
         // Crear canales para comunicación
         let (completion_sender, completion_receiver) = mpsc::channel();
@@ -209,6 +214,7 @@ impl TestStressApp {
                     results,
                     progress_sender,
                     cancel_flag_clone,
+                    auto_generate_report,
                 ).await {
                     eprintln!("Error ejecutando prueba: {}", e);
                 }
@@ -248,6 +254,7 @@ impl TestStressApp {
         
         let logs = Arc::clone(&self.logs);
         let results = Arc::clone(&self.results);
+        let auto_generate_report = self.auto_generate_report;
         
         // Crear canales para comunicación
         let (completion_sender, completion_receiver) = mpsc::channel();
@@ -264,7 +271,7 @@ impl TestStressApp {
             // Crear un runtime local para este thread
             let rt = tokio::runtime::Runtime::new().expect("Error creando runtime");
             rt.block_on(async {
-                if let Err(e) = Self::execute_suite_test_with_progress_and_cancel(&suite, logs, results, progress_sender, cancel_flag_clone).await {
+                if let Err(e) = Self::execute_suite_test_with_progress_and_cancel(&suite, logs, results, progress_sender, cancel_flag_clone, auto_generate_report).await {
                     eprintln!("Error ejecutando suite: {}", e);
                 }
                 // Notificar completación
@@ -287,6 +294,7 @@ impl TestStressApp {
         results: Arc<Mutex<Vec<TestSummary>>>,
         progress_sender: mpsc::Sender<f32>,
         cancel_flag: Arc<Mutex<bool>>,
+        auto_generate_report: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Agregar log inicial
         {
@@ -316,7 +324,8 @@ impl TestStressApp {
         let summary = tester
             .run_single_test_with_progress_and_cancel(request, base_url, iterations, concurrent_requests, wait_time, &final_output_dir, progress_sender, cancel_flag)
             .await?;
-        
+        // Guardar el nombre del CSV generado
+        let csv_file = PathBuf::from(format!("{}/{}_{}.csv", final_output_dir, request.description.replace(" ", "_"), chrono::Utc::now().format("%Y%m%d_%H%M%S")));
         {
             let mut results = results.lock().unwrap();
             results.push(summary);
@@ -331,6 +340,37 @@ impl TestStressApp {
             ));
         }
         
+        // Generar reporte Excel automáticamente si está habilitado
+        if auto_generate_report {
+            {
+                let mut logs = logs.lock().unwrap();
+                logs.push(format!("[{}] Generando reporte Excel automáticamente...", 
+                    chrono::Local::now().format("%H:%M:%S")
+                ));
+            }
+            // Crear carpeta de reportes
+            let reports_dir = format!("{}/reports", final_output_dir);
+            let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+            let safe_name = request.description.replace(" ", "_").replace("/", "_").replace("\\", "_");
+            let excel_path = format!("{}/report_{}_{}.xlsx", reports_dir, safe_name, timestamp);
+            match generate_excel_report_from_files(&[csv_file], &excel_path) {
+                Ok(excel_path) => {
+                    let mut logs = logs.lock().unwrap();
+                    logs.push(format!("[{}] ✅ Reporte Excel generado exitosamente en: {}", 
+                        chrono::Local::now().format("%H:%M:%S"), 
+                        excel_path
+                    ));
+                }
+                Err(e) => {
+                    let mut logs = logs.lock().unwrap();
+                    logs.push(format!("[{}] ❌ Error generando reporte Excel: {}", 
+                        chrono::Local::now().format("%H:%M:%S"), 
+                        e
+                    ));
+                }
+            }
+        }
+        
         Ok(())
     }
     
@@ -340,6 +380,7 @@ impl TestStressApp {
         results: Arc<Mutex<Vec<TestSummary>>>,
         progress_sender: mpsc::Sender<f32>,
         cancel_flag: Arc<Mutex<bool>>,
+        auto_generate_report: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Agregar log inicial
         {
@@ -366,12 +407,17 @@ impl TestStressApp {
         
         // Crear suite con directorio corregido
         let mut corrected_suite = suite.clone();
-        corrected_suite.output_dir = final_output_dir;
+        corrected_suite.output_dir = final_output_dir.clone();
         
         // Crear tester y ejecutar suite con cancelación
         let tester = LoadTester::new();
         let summaries = tester.run_suite_test_with_progress_and_cancel(&corrected_suite, progress_sender, cancel_flag).await?;
-        
+        // Guardar los nombres de los CSV generados
+        let mut csv_files = Vec::new();
+        for req in &suite.requests {
+            let csv_file = PathBuf::from(format!("{}/{}_{}.csv", final_output_dir, req.description.replace(" ", "_"), chrono::Utc::now().format("%Y%m%d_%H%M%S")));
+            csv_files.push(csv_file);
+        }
         {
             let mut results = results.lock().unwrap();
             results.extend(summaries);
@@ -384,6 +430,37 @@ impl TestStressApp {
                 chrono::Local::now().format("%H:%M:%S"), 
                 suite.name
             ));
+        }
+        
+        // Generar reporte Excel automáticamente si está habilitado
+        if auto_generate_report {
+            {
+                let mut logs = logs.lock().unwrap();
+                logs.push(format!("[{}] Generando reporte Excel automáticamente...", 
+                    chrono::Local::now().format("%H:%M:%S")
+                ));
+            }
+            // Crear carpeta de reportes
+            let reports_dir = format!("{}/reports", final_output_dir);
+            let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+            let safe_name = suite.name.replace(" ", "_").replace("/", "_").replace("\\", "_");
+            let excel_path = format!("{}/report_{}_{}.xlsx", reports_dir, safe_name, timestamp);
+            match generate_excel_report_from_files(&csv_files, &excel_path) {
+                Ok(excel_path) => {
+                    let mut logs = logs.lock().unwrap();
+                    logs.push(format!("[{}] ✅ Reporte Excel generado exitosamente en: {}", 
+                        chrono::Local::now().format("%H:%M:%S"), 
+                        excel_path
+                    ));
+                }
+                Err(e) => {
+                    let mut logs = logs.lock().unwrap();
+                    logs.push(format!("[{}] ❌ Error generando reporte Excel: {}", 
+                        chrono::Local::now().format("%H:%M:%S"), 
+                        e
+                    ));
+                }
+            }
         }
         
         Ok(())
@@ -644,6 +721,7 @@ impl TestStressApp {
             if self.output_dir.trim().is_empty() {
                 ui.colored_label(egui::Color32::RED, "⚠️ Debes especificar un directorio de salida antes de ejecutar la prueba.");
             }
+            ui.checkbox(&mut self.auto_generate_report, "📊 Generar reporte Excel automáticamente después de la prueba");
         });
         
         // Configuración de la petición
@@ -865,6 +943,7 @@ impl TestStressApp {
             if self.output_dir.trim().is_empty() {
                 ui.colored_label(egui::Color32::RED, "⚠️ Debes especificar un directorio de salida antes de ejecutar la suite.");
             }
+            ui.checkbox(&mut self.auto_generate_report, "📊 Generar reporte Excel automáticamente después de la suite");
         });
         
         // Lista de peticiones
@@ -1065,12 +1144,37 @@ impl TestStressApp {
         ui.horizontal(|ui| {
             if ui.button("📊 Generar Reporte").clicked() {
                 let output_dir = self.output_dir.clone();
-                match crate::report_generator::generate_excel_report(&output_dir) {
-                    Ok(path) => {
-                        self.report_success_message = Some(format!("Reporte Excel generado exitosamente en: {}", path));
-                    },
-                    Err(e) => {
-                        self.report_success_message = Some(format!("Error generando reporte: {}", e));
+                
+                // Encontrar todos los archivos CSV en el directorio
+                let mut csv_files = Vec::new();
+                if let Ok(entries) = fs::read_dir(&output_dir) {
+                    for entry in entries {
+                        if let Ok(entry) = entry {
+                            let path = entry.path();
+                            if let Some(ext) = path.extension() {
+                                if ext == "csv" {
+                                    csv_files.push(path);
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                if csv_files.is_empty() {
+                    self.report_success_message = Some("No se encontraron archivos CSV en el directorio de resultados".to_string());
+                } else {
+                    // Crear carpeta de reportes
+                    let reports_dir = format!("{}/reports", output_dir);
+                    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+                    let excel_path = format!("{}/report_{}.xlsx", reports_dir, timestamp);
+                    
+                    match generate_excel_report_from_files(&csv_files, &excel_path) {
+                        Ok(path) => {
+                            self.report_success_message = Some(format!("Reporte Excel generado exitosamente en: {}", path));
+                        },
+                        Err(e) => {
+                            self.report_success_message = Some(format!("Error generando reporte: {}", e));
+                        }
                     }
                 }
             }

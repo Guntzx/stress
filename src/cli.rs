@@ -1,7 +1,7 @@
 use crate::config::{ensure_output_directory, get_output_directory, save_config, load_config, list_saved_configs, delete_config};
 use crate::load_test::LoadTester;
 use crate::models::{TestRequest, TestSuite, SavedConfig, HttpMethod, HttpHeader, QueryParameter};
-use crate::report_generator::generate_excel_report;
+use crate::report_generator::generate_excel_report_from_files;
 use std::fs;
 use std::path::PathBuf;
 use tracing::info;
@@ -144,7 +144,29 @@ pub fn generate_report(results_dir: &PathBuf) -> Result<(), Box<dyn std::error::
     if !results_dir.exists() {
         return Err(format!("El directorio {} no existe", results_path).into());
     }
-    match crate::report_generator::generate_excel_report(&results_path) {
+    
+    // Encontrar todos los archivos CSV en el directorio
+    let mut csv_files = Vec::new();
+    for entry in fs::read_dir(results_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if let Some(ext) = path.extension() {
+            if ext == "csv" {
+                csv_files.push(path);
+            }
+        }
+    }
+    
+    if csv_files.is_empty() {
+        return Err("No se encontraron archivos CSV en el directorio especificado".into());
+    }
+    
+    // Crear carpeta de reportes
+    let reports_dir = results_dir.join("reports");
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let excel_path = reports_dir.join(format!("report_{}.xlsx", timestamp));
+    
+    match generate_excel_report_from_files(&csv_files, &excel_path.to_string_lossy()) {
         Ok(path) => {
             println!("Reporte Excel generado exitosamente en: {}", path);
             Ok(())
