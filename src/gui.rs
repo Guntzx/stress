@@ -81,6 +81,19 @@ pub struct TestStressApp {
     // Opciones generales
     show_terminal: bool, // Mostrar terminal (por defecto false)
     terminal_child: Option<Child>, // Proceso de terminal abierto
+    
+    // Estado para advertencias de límites
+    show_limit_warning: bool,
+    limit_warning_message: String,
+    limit_warning_accept: bool,
+    pending_action: Option<PendingAction>,
+}
+
+// Acción pendiente tras advertencia
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum PendingAction {
+    RunSingleTest,
+    RunSuiteTest,
 }
 
 impl TestStressApp {
@@ -111,6 +124,10 @@ impl TestStressApp {
             progress_receiver: None,
             show_terminal: prefs.show_terminal,
             terminal_child: None,
+            show_limit_warning: false,
+            limit_warning_message: String::new(),
+            limit_warning_accept: false,
+            pending_action: None,
         };
         // Solo abrir terminal si la preferencia está activa y no hay terminal abierta
         if app.show_terminal {
@@ -139,6 +156,10 @@ impl TestStressApp {
     }
     
     fn run_single_test(&mut self) {
+        // Si hay advertencia activa, no ejecutar
+        if self.show_limit_warning {
+            return;
+        }
         // Limpiar logs al iniciar nueva prueba
         {
             let mut logs = self.logs.lock().unwrap();
@@ -197,6 +218,10 @@ impl TestStressApp {
     }
     
     fn run_suite_test(&mut self) {
+        // Si hay advertencia activa, no ejecutar
+        if self.show_limit_warning {
+            return;
+        }
         // Limpiar logs al iniciar nueva prueba
         {
             let mut logs = self.logs.lock().unwrap();
@@ -385,10 +410,8 @@ impl TestStressApp {
     
     fn load_config(&mut self, name: &str) -> Result<(), Box<dyn std::error::Error>> {
         let config = load_config(name)?;
-        
         // Cargar la configuración en la pestaña apropiada
         self.base_url = config.base_url;
-        
         if config.requests.len() == 1 {
             // Es una petición individual, cargar en pestaña 0
             self.current_tab = 0;
@@ -398,8 +421,26 @@ impl TestStressApp {
             self.current_tab = 1;
             self.suite_name = config.name.clone();
             self.suite_requests = config.requests.clone();
+            // Validar límites de la suite cargada
+            // Buscar los campos de iteraciones, concurrent_requests y wait_time en la suite
+            // Si se supera algún máximo, mostrar advertencia igual que en ejecución
+            // Si es menor al mínimo, mostrar error
+            let suite = crate::models::TestSuite {
+                name: self.suite_name.clone(),
+                base_url: self.base_url.clone(),
+                requests: self.suite_requests.clone(),
+                iterations: self.iterations,
+                concurrent_requests: self.concurrent_requests,
+                wait_time: self.wait_time,
+                output_dir: self.output_dir.clone(),
+            };
+            if suite.iterations < 1 || suite.concurrent_requests < 1 || suite.wait_time < 1 {
+                self.add_log("Error: Los valores mínimos para iteraciones, peticiones simultáneas y tiempo de espera son 1.".to_string());
+                return Err("Valores mínimos inválidos en la configuración cargada".into());
+            }
+            // Si hay advertencia, mostrar popup
+            self.check_limits(suite.iterations, suite.concurrent_requests, suite.wait_time, PendingAction::RunSuiteTest);
         }
-        
         Ok(())
     }
     
@@ -486,6 +527,43 @@ impl TestStressApp {
         }
         false
     }
+
+    fn check_limits(&mut self, iterations: u32, concurrent_requests: u32, wait_time: u64, action: PendingAction) -> bool {
+        // Validar mínimos primero
+        if iterations < 1 {
+            self.add_log("Error: El mínimo para iteraciones es 1.".to_string());
+            return false;
+        }
+        if concurrent_requests < 1 {
+            self.add_log("Error: El mínimo para peticiones simultáneas es 1.".to_string());
+            return false;
+        }
+        if wait_time < 1 {
+            self.add_log("Error: El mínimo para tiempo de espera es 1 segundo.".to_string());
+            return false;
+        }
+        // Si ya hay un warning activo, no hacer nada
+        if self.show_limit_warning {
+            return false;
+        }
+        // Validar máximos y mostrar advertencia si corresponde
+        let mut warning = None;
+        if iterations > 100 {
+            warning = Some("El máximo recomendado para iteraciones es 100. ¿Deseas continuar de todas formas?".to_string());
+        } else if concurrent_requests > 100 {
+            warning = Some("El máximo recomendado para peticiones simultáneas es 100. ¿Deseas continuar de todas formas?".to_string());
+        } else if wait_time > 100 {
+            warning = Some("El máximo recomendado para tiempo de espera es 100 segundos. ¿Deseas continuar de todas formas?".to_string());
+        }
+        if let Some(msg) = warning {
+            self.show_limit_warning = true;
+            self.limit_warning_message = msg;
+            self.limit_warning_accept = false;
+            self.pending_action = Some(action);
+            return false;
+        }
+        true
+    }
 }
 
 impl eframe::App for TestStressApp {
@@ -537,15 +615,15 @@ impl TestStressApp {
             });
             ui.horizontal(|ui| {
                 ui.label("Iteraciones:");
-                ui.add(egui::DragValue::new(&mut self.iterations).clamp_range(1..=10000));
+                ui.add(egui::DragValue::new(&mut self.iterations));
             });
             ui.horizontal(|ui| {
                 ui.label("Peticiones simultáneas:");
-                ui.add(egui::DragValue::new(&mut self.concurrent_requests).clamp_range(1..=100));
+                ui.add(egui::DragValue::new(&mut self.concurrent_requests));
             });
             ui.horizontal(|ui| {
                 ui.label("Tiempo de espera (seg):");
-                ui.add(egui::DragValue::new(&mut self.wait_time).clamp_range(0..=60));
+                ui.add(egui::DragValue::new(&mut self.wait_time));
             });
             ui.horizontal(|ui| {
                 ui.label("Directorio de salida:");
@@ -664,7 +742,10 @@ impl TestStressApp {
                 if !self.is_running {
                     if self.output_dir.trim().is_empty() {
                         self.add_log("Error: Debes especificar un directorio de salida antes de ejecutar la prueba.".to_string());
-                    } else {
+                    } else if self.show_limit_warning {
+                        // Si ya hay advertencia, solo mostrar el popup, no ejecutar
+                        // (el popup se muestra abajo)
+                    } else if self.check_limits(self.iterations, self.concurrent_requests, self.wait_time, PendingAction::RunSingleTest) {
                         self.run_single_test();
                     }
                 }
@@ -711,6 +792,32 @@ impl TestStressApp {
                 }
             }
         });
+
+        // Popup de advertencia
+        if self.show_limit_warning {
+            egui::Window::new("Advertencia de límite")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ui.ctx(), |ui| {
+                    ui.label(&self.limit_warning_message);
+                    ui.checkbox(&mut self.limit_warning_accept, "Entiendo los riesgos y deseo continuar");
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(self.limit_warning_accept, egui::Button::new("Continuar")).clicked() {
+                            self.show_limit_warning = false;
+                            if let Some(action) = self.pending_action {
+                                match action {
+                                    PendingAction::RunSingleTest => self.run_single_test(),
+                                    PendingAction::RunSuiteTest => self.run_suite_test(),
+                                }
+                            }
+                        }
+                        if ui.button("Cancelar").clicked() {
+                            self.show_limit_warning = false;
+                        }
+                    });
+                });
+        }
     }
     
     fn render_suite_test_tab(&mut self, ui: &mut egui::Ui) {
@@ -729,15 +836,15 @@ impl TestStressApp {
             });
             ui.horizontal(|ui| {
                 ui.label("Iteraciones:");
-                ui.add(egui::DragValue::new(&mut self.iterations).clamp_range(1..=10000));
+                ui.add(egui::DragValue::new(&mut self.iterations));
             });
             ui.horizontal(|ui| {
                 ui.label("Peticiones simultáneas:");
-                ui.add(egui::DragValue::new(&mut self.concurrent_requests).clamp_range(1..=100));
+                ui.add(egui::DragValue::new(&mut self.concurrent_requests));
             });
             ui.horizontal(|ui| {
                 ui.label("Tiempo de espera (seg):");
-                ui.add(egui::DragValue::new(&mut self.wait_time).clamp_range(0..=60));
+                ui.add(egui::DragValue::new(&mut self.wait_time));
             });
             ui.horizontal(|ui| {
                 ui.label("Directorio de salida:");
@@ -787,7 +894,7 @@ impl TestStressApp {
                 if !self.is_running {
                     if self.output_dir.trim().is_empty() {
                         self.add_log("Error: Debes especificar un directorio de salida antes de ejecutar la suite.".to_string());
-                    } else {
+                    } else if self.check_limits(self.iterations, self.concurrent_requests, self.wait_time, PendingAction::RunSuiteTest) {
                         self.run_suite_test();
                     }
                 }
@@ -832,6 +939,32 @@ impl TestStressApp {
                 }
             }
         });
+
+        // Popup de advertencia
+        if self.show_limit_warning {
+            egui::Window::new("Advertencia de límite")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ui.ctx(), |ui| {
+                    ui.label(&self.limit_warning_message);
+                    ui.checkbox(&mut self.limit_warning_accept, "Entiendo los riesgos y deseo continuar");
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(self.limit_warning_accept, egui::Button::new("Continuar")).clicked() {
+                            self.show_limit_warning = false;
+                            if let Some(action) = self.pending_action {
+                                match action {
+                                    PendingAction::RunSingleTest => self.run_single_test(),
+                                    PendingAction::RunSuiteTest => self.run_suite_test(),
+                                }
+                            }
+                        }
+                        if ui.button("Cancelar").clicked() {
+                            self.show_limit_warning = false;
+                        }
+                    });
+                });
+        }
     }
     
     fn render_configs_tab(&mut self, ui: &mut egui::Ui) {

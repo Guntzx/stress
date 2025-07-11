@@ -5,6 +5,44 @@ use crate::report_generator::generate_excel_report;
 use std::fs;
 use std::path::PathBuf;
 use tracing::info;
+use std::io::{self, Write};
+
+fn check_limits_cli(iterations: u32, concurrent: u32, wait_time: u64) {
+    if iterations < 1 {
+        eprintln!("Error: El mínimo permitido para iteraciones es 1.");
+        std::process::exit(1);
+    }
+    if concurrent < 1 {
+        eprintln!("Error: El mínimo permitido para peticiones simultáneas es 1.");
+        std::process::exit(1);
+    }
+    if wait_time < 1 {
+        eprintln!("Error: El mínimo permitido para tiempo de espera es 1 segundo.");
+        std::process::exit(1);
+    }
+    let mut warning = None;
+    if iterations > 100 {
+        warning = Some("El máximo recomendado para iteraciones es 100. ¿Deseas continuar de todos modos? (escribe: deseo continuar de todos modos)");
+    } else if concurrent > 100 {
+        warning = Some("El máximo recomendado para peticiones simultáneas es 100. ¿Deseas continuar de todos modos? (escribe: deseo continuar de todos modos)");
+    } else if wait_time > 100 {
+        warning = Some("El máximo recomendado para tiempo de espera es 100 segundos. ¿Deseas continuar de todos modos? (escribe: deseo continuar de todos modos)");
+    }
+    if let Some(msg) = warning {
+        println!("ADVERTENCIA: {}", msg);
+        print!("Confirma: ");
+        io::stdout().flush().unwrap();
+        let mut input = String::new();
+        if io::stdin().read_line(&mut input).is_err() {
+            eprintln!("Error leyendo la confirmación");
+            std::process::exit(1);
+        }
+        if input.trim() != "deseo continuar de todos modos" {
+            println!("Operación cancelada por el usuario.");
+            std::process::exit(1);
+        }
+    }
+}
 
 pub async fn run_single_test(
     request: &TestRequest,
@@ -15,6 +53,9 @@ pub async fn run_single_test(
     output_dir: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!("Ejecutando prueba individual: {}", request.description);
+    
+    // Validar límites
+    check_limits_cli(iterations, concurrent, wait_time);
     
     // Validar que el directorio de salida sea obligatorio
     let output_path = match output_dir {
@@ -41,6 +82,9 @@ pub async fn run_single_test(
 pub async fn run_suite_test(suite: &TestSuite) -> Result<(), Box<dyn std::error::Error>> {
     info!("Ejecutando suite de pruebas: {}", suite.name);
     
+    // Validar límites
+    check_limits_cli(suite.iterations, suite.concurrent_requests, suite.wait_time);
+    
     // Crear tester y ejecutar suite
     let tester = LoadTester::new();
     let summaries = tester.run_suite_test(suite).await?;
@@ -64,6 +108,13 @@ pub async fn save_test_config(config: &SavedConfig) -> Result<(), Box<dyn std::e
 pub async fn load_test_config(name: &str) -> Result<SavedConfig, Box<dyn std::error::Error>> {
     info!("Cargando configuración: {}", name);
     let config = load_config(name)?;
+    // Validar límites si la config tiene requests tipo suite
+    if config.requests.len() > 1 {
+        // Intentar deserializar como suite
+        if let Ok(suite) = serde_json::from_str::<crate::models::TestSuite>(&serde_json::to_string(&config).unwrap()) {
+            check_limits_cli(suite.iterations, suite.concurrent_requests, suite.wait_time);
+        }
+    }
     println!("Configuración cargada exitosamente: {}", name);
     Ok(config)
 }
