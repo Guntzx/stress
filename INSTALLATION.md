@@ -32,7 +32,14 @@ cargo build --release
 
 ### macOS
 
-#### Opción 1: Instalación manual
+#### Opción recomendada: Crear app nativa
+```bash
+./create_app.sh
+open "Stress.app"
+```
+Puedes arrastrar `Stress.app` a la carpeta Aplicaciones para acceso desde Launchpad/Spotlight.
+
+#### Opción 2: Instalación manual
 ```bash
 # Descargar el ejecutable
 curl -L -o test-stress https://github.com/Guntzx/stress/releases/latest/download/test-stress-macos-arm64
@@ -47,7 +54,7 @@ sudo mv test-stress /usr/local/bin/
 stress --help
 ```
 
-#### Opción 2: Usar Homebrew (recomendado)
+#### Opción 3: Usar Homebrew (recomendado)
 ```bash
 # Agregar el tap (si es necesario)
 brew tap Guntzx/stress
@@ -61,7 +68,13 @@ stress --help
 
 ### Linux
 
-#### Opción 1: Instalación manual
+#### Opción recomendada: Compilar y ejecutar
+```bash
+cargo build --release
+./target/release/stress
+```
+
+#### Opción 2: Instalación manual
 ```bash
 # Descargar el ejecutable
 wget https://github.com/Guntzx/stress/releases/latest/download/test-stress-linux
@@ -76,25 +89,31 @@ sudo mv test-stress-linux /usr/local/bin/test-stress
 stress --help
 ```
 
-#### Opción 2: Usar Snap (si está disponible)
+#### Opción 3: Usar Snap (si está disponible)
 ```bash
 sudo snap install test-stress
 ```
 
 ### Windows
 
-#### Opción 1: Instalación manual
+#### Opción recomendada: Compilar y ejecutar
+```cmd
+cargo build --release
+.target\release\stress.exe
+```
+
+#### Opción 2: Instalación manual
 1. Descarga `test-stress-windows.exe`
 2. Colócalo en una carpeta (ej: `C:\Program Files\TestStress\`)
 3. Agrega la carpeta al PATH del sistema
 4. Abre Command Prompt y ejecuta: `test-stress-windows.exe --help`
 
-#### Opción 2: Usar Chocolatey (si está disponible)
+#### Opción 3: Usar Chocolatey (si está disponible)
 ```cmd
 choco install test-stress
 ```
 
-#### Opción 3: Usar Scoop (si está disponible)
+#### Opción 4: Usar Scoop (si está disponible)
 ```cmd
 scoop install test-stress
 ```

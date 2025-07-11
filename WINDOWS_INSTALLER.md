@@ -1,5 +1,10 @@
 # Instalador de Stress para Windows
 
+> **Nota:**
+> - Si eres usuario avanzado, puedes compilar el binario directamente con `cargo build --release` y ejecutarlo desde la terminal.
+> - Para macOS, se recomienda usar el script `create_app.sh` para obtener una app nativa (`Stress.app`).
+> - Para Linux, compila con `cargo build --release` y ejecuta el binario generado.
+
 ## 🚀 Instalación rápida
 
 1. Descarga el archivo `stress-setup.exe` (o compílalo con el script batch)

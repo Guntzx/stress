@@ -1,5 +1,11 @@
 # Comparación: Scripts Bash vs Aplicación Rust
 
+> **Nota:**
+> - Ahora puedes instalar y ejecutar la app de forma multiplataforma:
+>   - En **macOS** usa el script `create_app.sh` para obtener una app nativa (`Stress.app`).
+>   - En **Linux** y **Windows** compila con `cargo build --release` y ejecuta el binario generado.
+> - Consulta los archivos `README.md`, `INSTALLATION.md` y `QUICK_START.md` para instrucciones detalladas y actualizadas.
+
 ## Resumen Ejecutivo
 
 Esta tabla compara las funcionalidades y características de los scripts bash originales con la nueva aplicación en Rust.

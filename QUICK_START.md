@@ -1,5 +1,9 @@
 # 🚀 Guía de Inicio Rápido - Test Stress
 
+> **Nota:**
+> - En **macOS** se recomienda usar el script `create_app.sh` para obtener una app nativa (`Stress.app`).
+> - En **Linux** y **Windows** puedes compilar con `cargo build --release` y ejecutar el binario generado.
+
 ## ⚡ Configuración en 5 minutos
 
 ### 🚀 Opción 1: Instalador Universal (Recomendado)
@@ -11,6 +15,28 @@ curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/install_universa
 ```
 
 **¡Listo!** El instalador detecta automáticamente tu sistema y hace todo por ti.
+
+---
+
+### Ejemplo rápido por sistema operativo
+
+#### macOS
+```sh
+./create_app.sh
+open "Stress.app"
+```
+
+#### Linux
+```sh
+cargo build --release
+./target/release/stress --gui
+```
+
+#### Windows
+```cmd
+cargo build --release
+.target\release\stress.exe --gui
+```
 
 ---
 

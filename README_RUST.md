@@ -266,6 +266,64 @@ cargo build --release --target x86_64-pc-windows-msvc
 cargo build --release --target x86_64-apple-darwin
 ```
 
+## Compilación y ejecución por sistema operativo
+
+### macOS
+
+- Compila y crea la app nativa:
+  ```sh
+  ./create_app.sh
+  ```
+  Esto generará `Stress.app` en el directorio actual. Puedes abrirla con:
+  ```sh
+  open "Stress.app"
+  ```
+  O arrástrala a la carpeta Aplicaciones.
+
+- Para desarrollo rápido:
+  ```sh
+  cargo run --release
+  ```
+
+### Linux
+
+- Compila el binario:
+  ```sh
+  cargo build --release
+  ```
+  Ejecuta con:
+  ```sh
+  ./target/release/stress
+  ```
+
+### Windows
+
+- Compila el binario:
+  ```sh
+  cargo build --release
+  ```
+  Ejecuta con:
+  ```sh
+  .\target\release\stress.exe
+  ```
+
+- (Opcional) Usa el instalador NSIS o los scripts incluidos para crear un instalador.
+
+---
+
+## Notas para desarrolladores Rust
+- El proyecto usa `eframe/egui` para la GUI y es multiplataforma.
+- Puedes modificar y probar la interfaz gráfica con:
+  ```sh
+  cargo run -- --gui
+  ```
+- El binario release es el que se debe empaquetar para usuarios finales.
+- Para crear la app de macOS, usa el script `create_app.sh`.
+
+---
+
+Consulta el `README.md` principal para instrucciones de usuario final y detalles de instalación por sistema operativo.
+
 ## Contribución
 
 1. Fork el proyecto

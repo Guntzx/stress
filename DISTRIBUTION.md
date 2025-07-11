@@ -1,8 +1,34 @@
 # Guía de Distribución - Test Stress
 
+> **Nota:**
+> - En **macOS** se recomienda usar el script `create_app.sh` para obtener una app nativa (`Stress.app`).
+> - En **Linux** y **Windows** puedes compilar con `cargo build --release` y ejecutar el binario generado.
+
 Esta guía explica todas las opciones disponibles para distribuir e instalar la aplicación Test Stress en diferentes plataformas.
 
 ## 📦 Opciones de Distribución
+
+### Ejemplo rápido por sistema operativo
+
+#### macOS
+```sh
+./create_app.sh
+open "Stress.app"
+```
+
+#### Linux
+```sh
+cargo build --release
+./target/release/stress --gui
+```
+
+#### Windows
+```cmd
+cargo build --release
+.target\release\stress.exe --gui
+```
+
+---
 
 ### 1. **Ejecutables Binarios** (Recomendado para usuarios finales)
 

@@ -1,99 +1,62 @@
 #!/bin/bash
 
-# Script para crear una aplicación .app de macOS
 set -e
 
-# Configuración
-APP_NAME="Test Stress"
-APP_VERSION="1.0.0"
-BUNDLE_ID="com.tuempresa.test-stress"
-APP_DIR="Test Stress.app"
+APP_NAME="Stress"
+BIN_PATH="target/release/stress"
+APP_DIR="${APP_NAME}.app"
+ICON_SRC="icon.icns"
+ICON_DST="${APP_DIR}/Contents/Resources/icon.icns"
 
-echo "🚀 Creando aplicación .app para macOS..."
+# 1. Compilar el binario en release
+cargo build --release
 
-# Crear estructura de la aplicación
+# 2. Crear estructura de la app
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 
-# Copiar ejecutable
-if [[ "$(uname -m)" == "arm64" ]]; then
-    cp releases/test-stress-macos-arm64 "$APP_DIR/Contents/MacOS/test-stress"
-else
-    cp releases/test-stress-macos-intel "$APP_DIR/Contents/MacOS/test-stress"
-fi
+# 3. Copiar el binario
+cp "$BIN_PATH" "$APP_DIR/Contents/MacOS/$APP_NAME"
+chmod +x "$APP_DIR/Contents/MacOS/$APP_NAME"
 
-chmod +x "$APP_DIR/Contents/MacOS/test-stress"
-
-# Crear Info.plist
-cat > "$APP_DIR/Contents/Info.plist" << EOF
+# 4. Crear Info.plist
+cat > "$APP_DIR/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleExecutable</key>
-    <string>test-stress</string>
-    <key>CFBundleIdentifier</key>
-    <string>${BUNDLE_ID}</string>
     <key>CFBundleName</key>
-    <string>${APP_NAME}</string>
-    <key>CFBundleDisplayName</key>
-    <string>${APP_NAME}</string>
+    <string>$APP_NAME</string>
+    <key>CFBundleExecutable</key>
+    <string>$APP_NAME</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.tuempresa.stress</string>
     <key>CFBundleVersion</key>
-    <string>${APP_VERSION}</string>
-    <key>CFBundleShortVersionString</key>
-    <string>${APP_VERSION}</string>
+    <string>1.0</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
-    <key>CFBundleSignature</key>
-    <string>????</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>10.15</string>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <key>LSApplicationCategoryType</key>
-    <string>public.app-category.developer-tools</string>
-    <key>CFBundleDocumentTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleTypeName</key>
-            <string>Test Stress Configuration</string>
-            <key>CFBundleTypeExtensions</key>
-            <array>
-                <string>json</string>
-            </array>
-            <key>CFBundleTypeRole</key>
-            <string>Viewer</string>
-        </dict>
-    </array>
+    <key>CFBundleIconFile</key>
+    <string>icon.icns</string>
 </dict>
 </plist>
 EOF
 
-# Crear script de lanzamiento
-cat > "$APP_DIR/Contents/MacOS/launcher" << 'EOF'
-#!/bin/bash
+# 5. Copiar icono si existe
+if [ -f "$ICON_SRC" ]; then
+    cp "$ICON_SRC" "$ICON_DST"
+    echo "Icono copiado."
+else
+    echo "No se encontró icon.icns, la app usará el icono por defecto de macOS."
+fi
 
-# Obtener el directorio de la aplicación
-APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-EXECUTABLE="$APP_DIR/MacOS/test-stress"
+# 6. Mensaje final
+cat <<EOM
 
-# Crear directorios de configuración si no existen
-mkdir -p "$HOME/.test-stress"/{configs,results,logs}
+¡Listo! La app se ha creado en:
+  $APP_DIR
 
-# Ejecutar la aplicación
-exec "$EXECUTABLE" --gui
-EOF
+Puedes abrirla con:
+  open "$APP_DIR"
 
-chmod +x "$APP_DIR/Contents/MacOS/launcher"
-
-# Actualizar Info.plist para usar el launcher
-sed -i '' 's/<string>test-stress<\/string>/<string>launcher<\/string>/' "$APP_DIR/Contents/Info.plist"
-
-echo "✅ Aplicación creada: $APP_DIR"
-echo "📦 Para instalar:"
-echo "  • Arrastra '$APP_DIR' a la carpeta Aplicaciones"
-echo "  • O ejecuta: cp -r '$APP_DIR' /Applications/"
-echo ""
-echo "🎯 Para usar:"
-echo "  • Doble clic en '$APP_DIR'"
-echo "  • O desde Spotlight: 'Test Stress'" 
+Si quieres distribuirla, puedes comprimir la carpeta $APP_DIR o crear un .dmg/.pkg.
+EOM 

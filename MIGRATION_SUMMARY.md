@@ -1,5 +1,11 @@
 # 📋 Resumen de Migración: Scripts Bash → Aplicación Rust
 
+> **Nota:**
+> - Ahora puedes instalar y ejecutar la app de forma multiplataforma:
+>   - En **macOS** usa el script `create_app.sh` para obtener una app nativa (`Stress.app`).
+>   - En **Linux** y **Windows** compila con `cargo build --release` y ejecuta el binario generado.
+> - Consulta los archivos `README.md`, `INSTALLATION.md` y `QUICK_START.md` para instrucciones detalladas y actualizadas.
+
 ## 🎯 Objetivo Cumplido
 
 Se ha completado exitosamente la migración de todos los scripts bash de pruebas de carga a una aplicación moderna en Rust, manteniendo toda la funcionalidad original y agregando nuevas características significativas.

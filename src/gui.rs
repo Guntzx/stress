@@ -6,6 +6,40 @@ use eframe::egui;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
+use dirs;
+use std::process::{Child, Command, Stdio};
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize, Default)]
+struct GeneralPrefs {
+    show_terminal: bool,
+}
+
+fn get_prefs_path() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    let base = dirs::document_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")));
+    #[cfg(not(target_os = "windows"))]
+    let base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    base.join(".stress/general_prefs.json")
+}
+
+fn load_general_prefs() -> GeneralPrefs {
+    let path = get_prefs_path();
+    if let Ok(data) = fs::read_to_string(&path) {
+        if let Ok(prefs) = serde_json::from_str(&data) {
+            return prefs;
+        }
+    }
+    GeneralPrefs::default()
+}
+
+fn save_general_prefs(prefs: &GeneralPrefs) {
+    let path = get_prefs_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, serde_json::to_string_pretty(prefs).unwrap_or_default());
+}
 
 pub struct TestStressApp {
     // Configuración general
@@ -43,14 +77,18 @@ pub struct TestStressApp {
     // Canal para comunicación con threads
     completion_receiver: Option<mpsc::Receiver<()>>,
     progress_receiver: Option<mpsc::Receiver<f32>>,
+    
+    // Opciones generales
+    show_terminal: bool, // Mostrar terminal (por defecto false)
+    terminal_child: Option<Child>, // Proceso de terminal abierto
 }
 
 impl TestStressApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         // Cargar configuraciones guardadas
         let saved_configs = list_saved_configs().unwrap_or_default();
-        
-        Self {
+        let prefs = load_general_prefs();
+        let mut app = Self {
             base_url: "http://localhost:8080".to_string(),
             iterations: 10,
             concurrent_requests: 1,
@@ -71,7 +109,14 @@ impl TestStressApp {
             cancel_flag: None,
             completion_receiver: None,
             progress_receiver: None,
+            show_terminal: prefs.show_terminal,
+            terminal_child: None,
+        };
+        // Solo abrir terminal si la preferencia está activa y no hay terminal abierta
+        if app.show_terminal {
+            app.open_terminal();
         }
+        app
     }
     
     fn add_log(&self, message: String) {
@@ -315,7 +360,7 @@ impl TestStressApp {
         Ok(())
     }
     
-    fn save_current_config(&self) -> Result<(), Box<dyn std::error::Error>> {
+    fn save_current_config(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Determinar qué tipo de configuración guardar basado en la pestaña actual
         let config = if self.current_tab == 0 {
             // Guardar petición individual
@@ -332,9 +377,9 @@ impl TestStressApp {
                 requests: self.suite_requests.clone(),
             }
         };
-        
         save_config(&config)?;
         println!("Configuración guardada exitosamente: {}", config.name);
+        self.refresh_configs();
         Ok(())
     }
     
@@ -383,6 +428,64 @@ impl TestStressApp {
             }
         }
     }
+
+    fn open_terminal(&mut self) {
+        // Solo abrir si no hay terminal abierta
+        if self.terminal_child.is_some() {
+            return;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let exe = "cmd.exe";
+            let args = ["/C", "start", "cmd.exe", "/K", "echo Logs de Stress App && pause"];
+            if let Ok(child) = Command::new(exe)
+                .args(&args)
+                .spawn() {
+                self.terminal_child = Some(child);
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let script = "tell application \"Terminal\" to do script \"echo Logs de Stress App; exec bash\"";
+            let result = Command::new("osascript")
+                .arg("-e")
+                .arg(script)
+                .spawn();
+            if result.is_ok() {
+                // No se puede capturar el proceso fácilmente, pero marcamos como abierta
+                self.terminal_child = Some(unsafe { std::mem::zeroed() });
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let terms = ["x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal", "xterm"];
+            for term in &terms {
+                if let Ok(child) = Command::new(term)
+                    .arg("-e")
+                    .arg("bash -c 'echo Logs de Stress App; exec bash'")
+                    .spawn() {
+                    self.terminal_child = Some(child);
+                    break;
+                }
+            }
+        }
+    }
+
+    fn close_terminal(&mut self) -> bool {
+        if let Some(mut child) = self.terminal_child.take() {
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            {
+                let _ = child.kill();
+                return true;
+            }
+            #[cfg(target_os = "macos")]
+            {
+                // No se puede cerrar la terminal abierta por osascript
+                return false;
+            }
+        }
+        false
+    }
 }
 
 impl eframe::App for TestStressApp {
@@ -399,6 +502,7 @@ impl eframe::App for TestStressApp {
                 ui.selectable_value(&mut self.current_tab, 1, "Suite de Pruebas");
                 ui.selectable_value(&mut self.current_tab, 2, "Configuraciones");
                 ui.selectable_value(&mut self.current_tab, 3, "Resultados");
+                ui.selectable_value(&mut self.current_tab, 4, "Opciones Generales");
             });
             
             ui.separator();
@@ -408,6 +512,7 @@ impl eframe::App for TestStressApp {
                 1 => self.render_suite_test_tab(ui),
                 2 => self.render_configs_tab(ui),
                 3 => self.render_results_tab(ui),
+                4 => self.render_general_options_tab(ui),
                 _ => {}
             }
         });
@@ -737,9 +842,19 @@ impl TestStressApp {
                 self.refresh_configs();
             }
             if ui.button("📁 Abrir Explorador").clicked() {
-                // Abrir el explorador de archivos en la carpeta de configuraciones
-                if let Err(e) = open::that("./configs") {
-                    eprintln!("Error abriendo explorador: {}", e);
+                #[cfg(target_os = "windows")]
+                let config_dir = std::path::PathBuf::from("./configs");
+                #[cfg(not(target_os = "windows"))]
+                let config_dir = dirs::home_dir()
+                    .map(|h| h.join(".stress/configs"))
+                    .unwrap_or_else(|| std::path::PathBuf::from("./configs"));
+                // Crear la carpeta si no existe
+                if let Err(e) = std::fs::create_dir_all(&config_dir) {
+                    eprintln!("No se pudo crear la carpeta de configuraciones: {}", e);
+                } else {
+                    if let Err(e) = open::that(config_dir) {
+                        eprintln!("Error abriendo explorador: {}", e);
+                    }
                 }
             }
         });
@@ -811,5 +926,36 @@ impl TestStressApp {
                 // TODO: Implementar generación de reporte
             }
         });
+    }
+
+    fn render_general_options_tab(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Opciones Generales");
+        ui.separator();
+        let mut changed = false;
+        let mut close_failed = false;
+        if ui.checkbox(&mut self.show_terminal, "Mostrar terminal (logs en tiempo real)").changed() {
+            changed = true;
+        }
+        ui.label("Por defecto, la terminal está oculta. Si activas esta opción, se abrirá una terminal con logs en tiempo real. Si la desactivas, se cerrará la terminal si es posible.");
+        if changed {
+            let prefs = GeneralPrefs { show_terminal: self.show_terminal };
+            save_general_prefs(&prefs);
+            if self.show_terminal {
+                self.open_terminal();
+            } else {
+                if !self.close_terminal() {
+                    close_failed = true;
+                }
+            }
+        }
+        if !self.show_terminal && self.terminal_child.is_some() {
+            // Intentar cerrar si aún queda abierta
+            if !self.close_terminal() {
+                close_failed = true;
+            }
+        }
+        if close_failed {
+            ui.colored_label(egui::Color32::YELLOW, "No se pudo cerrar la terminal automáticamente. Ciérrala manualmente si es necesario.");
+        }
     }
 } 

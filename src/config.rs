@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use crate::models::SavedConfig;
+use std::env;
 
 #[cfg(target_os = "windows")]
 use std::process::Command;
@@ -60,42 +61,76 @@ fn request_admin_privileges() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+fn request_admin_privileges_with_args() -> Result<(), Box<dyn std::error::Error>> {
+    use std::process::Command;
+    let exe_path = env::current_exe()?;
+    let args: Vec<String> = env::args().skip(1).collect();
+    let args_str = args.join(" ");
+    let mut cmd = Command::new("powershell");
+    cmd.args(&[
+        "Start-Process",
+        &format!("'{}'", exe_path.to_string_lossy()),
+        "-Verb", "RunAs",
+        "-ArgumentList", &format!("'{}'", args_str),
+    ]);
+    let status = cmd.status()?;
+    if status.success() {
+        std::process::exit(0);
+    }
+    Err("No se pudo obtener privilegios de administrador (UAC) o el usuario lo rechazó".into())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn request_sudo_privileges_with_args() -> Result<(), Box<dyn std::error::Error>> {
+    use std::process::Command;
+    let exe_path = env::current_exe()?;
+    let args: Vec<String> = env::args().skip(1).collect();
+    let mut cmd = Command::new("sudo");
+    cmd.arg(exe_path);
+    for arg in args {
+        cmd.arg(arg);
+    }
+    let status = cmd.status()?;
+    if status.success() {
+        std::process::exit(0);
+    }
+    Err("No se pudo obtener privilegios de administrador (sudo) o el usuario lo rechazó".into())
+}
+
 fn ensure_directory_with_fallback(path: &str) -> Result<String, Box<dyn std::error::Error>> {
-    // Intentar crear el directorio
     match fs::create_dir_all(path) {
         Ok(_) => Ok(path.to_string()),
         Err(e) => {
             #[cfg(target_os = "windows")]
             {
-                // Si falla y no somos admin, intentar solicitar privilegios
-                if !is_admin() && e.kind() == std::io::ErrorKind::PermissionDenied {
+                if e.kind() == std::io::ErrorKind::PermissionDenied {
                     eprintln!("Se requieren permisos de administrador para acceder a: {}", path);
-                    eprintln!("Solicitando permisos...");
-                    
-                    if let Err(_) = request_admin_privileges() {
-                        // Si no se pueden solicitar privilegios, usar directorio temporal
-                        eprintln!("Usando directorio temporal como fallback");
-                        let temp_dir = std::env::temp_dir();
-                        let fallback_path = temp_dir.join("Stress").to_string_lossy().to_string();
-                        fs::create_dir_all(&fallback_path)?;
-                        Ok(fallback_path)
+                    eprintln!("Intentando relanzar con privilegios elevados...");
+                    if let Err(err) = request_admin_privileges_with_args() {
+                        eprintln!("Error: {}", err);
+                        return Err(Box::new(e));
                     } else {
-                        // El proceso se reinició con privilegios, no deberíamos llegar aquí
                         Ok(path.to_string())
                     }
                 } else {
-                    // Otro tipo de error o ya somos admin
                     Err(Box::new(e))
                 }
             }
-            
             #[cfg(not(target_os = "windows"))]
             {
-                // En sistemas Unix, usar directorio temporal como fallback
-                let temp_dir = std::env::temp_dir();
-                let fallback_path = temp_dir.join("stress").to_string_lossy().to_string();
-                fs::create_dir_all(&fallback_path)?;
-                Ok(fallback_path)
+                if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    eprintln!("Se requieren permisos de administrador para acceder a: {}", path);
+                    eprintln!("Intentando relanzar con sudo...");
+                    if let Err(err) = request_sudo_privileges_with_args() {
+                        eprintln!("Error: {}", err);
+                        return Err(Box::new(e));
+                    } else {
+                        Ok(path.to_string())
+                    }
+                } else {
+                    Err(Box::new(e))
+                }
             }
         }
     }

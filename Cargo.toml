@@ -58,4 +58,5 @@ dotenv = "0.15"
 open = "5.3"
 
 # Native file dialogs
-rfd = "0.13" 
+rfd = "0.13"
+dirs = "5.0" 
