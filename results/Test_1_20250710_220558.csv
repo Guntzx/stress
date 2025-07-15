@@ -1,0 +1,2 @@
+test_type,request_name,iteration,start_time,end_time,duration_ms,success,status_code,response,error
+Single,Test 1,1,2025-07-10T22:05:58.146117Z,2025-07-10T22:05:58.849704Z,703,true,201,"{""access_token"":""eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6InVzZXJLdXBvcyIsInRva2VuR1RQU2FsZXMiOjE3ODQ1OTM5NTM0LCJjYW5hbCI6IjEwMjc2IiwiaWF0IjoxNzUyMTg1MTU4LCJleHAiOjE3NTIyMDMxNTh9.c-Hx4dY3nc-AkJuEjj4bOQLGhAtr23kFt_WtCz9Iqxo""}",

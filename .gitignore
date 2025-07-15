@@ -1,0 +1,102 @@
+# Rust
+/target/
+Cargo.lock
+
+# Environment files
+.env
+.env.local
+.env.development
+.env.test
+.env.staging
+.env.qa
+.env.prod
+.env.production
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test results
+resultados_test_*/
+resultados_test_qa_*/
+resultados_test_prod_*/
+
+# Logs
+*.log
+
+# Excel files
+*.xlsx
+*.xls
+
+# Python (if any legacy scripts are used)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# Build artifacts
+*.exe
+*.msi
+*.dmg
+*.pkg
+*.deb
+*.rpm
+*.app
+*.app/
+
+# Installer files
+stress-setup.exe
+*-setup.exe
+*-installer.exe
+
+# Icons and graphics
+*.ico
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+
+# Temporary directories
+temp/
+tmp/
+.tmp/
+.cache/
+
+# Development artifacts
+dist/
+build/
+out/
+
+# Local configuration
+config.local.json
+settings.local.json
+*.local.*
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Windows specific
+*.lnk
+*.url
+desktop.ini
+
+# Results and data
+results/
+output/
+data/
+*.csv
+*.json
+*.xml 
+Test Stress.app/ 
