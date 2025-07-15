@@ -23,14 +23,9 @@ cd stress
 ```sh
 # Instala Rust si no lo tienes
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
 
 # Configura archivos de entorno
 ./setup.sh
-# O manualmente:
-cp env.qa.example .env.qa
-cp env.prod.example .env.prod
-# Edita las contraseñas en .env.qa y .env.prod
 ```
 
 ### 3. Compilar el proyecto

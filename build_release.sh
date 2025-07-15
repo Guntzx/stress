@@ -10,7 +10,7 @@ mkdir -p releases
 echo "📦 Compilando para macOS ARM64..."
 cargo build --release --target aarch64-apple-darwin
 if [ $? -eq 0 ]; then
-    cp target/aarch64-apple-darwin/release/test-stress releases/test-stress-macos-arm64
+    cp target/aarch64-apple-darwin/release/test-stress releases/stress-macos-arm64
     echo "✅ macOS ARM64 compilado exitosamente"
 else
     echo "❌ Error compilando para macOS ARM64"
@@ -20,7 +20,7 @@ fi
 echo "📦 Compilando para macOS Intel..."
 cargo build --release --target x86_64-apple-darwin
 if [ $? -eq 0 ]; then
-    cp target/x86_64-apple-darwin/release/test-stress releases/test-stress-macos-intel
+    cp target/x86_64-apple-darwin/release/test-stress releases/stress-macos-intel
     echo "✅ macOS Intel compilado exitosamente"
 else
     echo "❌ Error compilando para macOS Intel"
@@ -52,7 +52,7 @@ echo "📁 Los ejecutables están en el directorio 'releases/':"
 ls -la releases/
 echo ""
 echo "📋 Instrucciones de uso:"
-echo "  • macOS ARM64: ./test-stress-macos-arm64 --gui"
-echo "  • macOS Intel:  ./test-stress-macos-intel --gui"
+echo "  • macOS ARM64: ./stress-macos-arm64 --gui"
+echo "  • macOS Intel:  ./stress-macos-intel --gui"
 echo "  • Linux:        ./test-stress-linux --gui"
 echo "  • Windows:      test-stress-windows.exe --gui" 
