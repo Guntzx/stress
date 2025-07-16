@@ -1108,7 +1108,16 @@ impl TestStressApp {
                 // Panel de métricas del sistema en tiempo real (derecha)
                 if self.monitoring_config.enabled {
                     ui.vertical(|ui| {
-                        ui.heading("📊 Métricas del Sistema");
+                        let mut titulo_metricas = "📊 Métricas del Sistema".to_string();
+                        if self.monitoring_config.monitoring_type == MonitoringType::SSH {
+                            let host = &self.monitoring_config.ssh_config.host;
+                            if !host.trim().is_empty() {
+                                titulo_metricas = format!("📊 Métricas del Sistema - {}", host);
+                            } else {
+                                titulo_metricas = "📊 Métricas del Sistema - SSH".to_string();
+                            }
+                        }
+                        ui.heading(titulo_metricas);
                         
                         ui.group(|ui| {
                             if let Some(ref mut monitor) = self.system_monitor {
@@ -1454,7 +1463,16 @@ impl TestStressApp {
             
             // Panel de métricas del sistema en tiempo real
             if self.monitoring_config.enabled {
-                ui.heading("📊 Métricas del Sistema");
+                let mut titulo_metricas = "📊 Métricas del Sistema".to_string();
+                if self.monitoring_config.monitoring_type == MonitoringType::SSH {
+                    let host = &self.monitoring_config.ssh_config.host;
+                    if !host.trim().is_empty() {
+                        titulo_metricas = format!("📊 Métricas del Sistema - {}", host);
+                    } else {
+                        titulo_metricas = "📊 Métricas del Sistema - SSH".to_string();
+                    }
+                }
+                ui.heading(titulo_metricas);
                 
                 ui.group(|ui| {
                     if let Some(ref mut monitor) = self.system_monitor {
@@ -1814,8 +1832,6 @@ impl TestStressApp {
                         ui.label("Puerto:");
                         ui.add(egui::DragValue::new(&mut self.monitoring_config.ssh_config.port).clamp_range(1..=65535));
                     });
-                    
-                    ui.checkbox(&mut self.monitoring_config.ssh_config.save_credentials, "💾 Guardar credenciales (encriptadas)");
                     
                     ui.horizontal(|ui| {
                         if ui.button("🔗 Probar conexión").clicked() {

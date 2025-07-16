@@ -100,3 +100,9 @@ data/
 *.json
 *.xml 
 Test Stress.app/ 
+
+# Docker test
+Dockerfile.ssh-test
+docker-ssh-test.sh
+test-ssh-monitoring.sh
+test-monitoring.md
