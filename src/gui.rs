@@ -1,4 +1,4 @@
-use crate::config::{ensure_output_directory, get_output_directory, save_config, load_config, list_saved_configs, delete_config};
+use crate::config::{ensure_output_directory, get_output_directory, save_config, load_config, list_saved_configs, delete_config, list_configs_with_info, search_configs, ConfigInfo};
 use crate::load_test::LoadTester;
 use crate::models::{TestRequest, TestSuite, SavedConfig, TestSummary, HttpMethod, HttpHeader, QueryParameter};
 use crate::report_generator::generate_excel_report_from_files;
@@ -67,6 +67,12 @@ pub struct TestStressApp {
     saved_configs: Vec<String>,
     selected_config: String,
     
+    // Nuevos campos para gestión avanzada de configuraciones
+    configs_info: Vec<ConfigInfo>,
+    config_search_query: String,
+    config_current_page: usize,
+    configs_per_page: usize,
+    
     // Pestañas
     current_tab: usize,
     
@@ -97,6 +103,12 @@ pub struct TestStressApp {
     // Opción para subir automáticamente a carpeta remota
     auto_upload_report: bool,
     remote_folder_path: String,
+    // Estado para mensaje de guardado de configuración
+    config_saved_message: Option<(String, std::time::Instant)>,
+    
+    // Estado para acciones pendientes de configuraciones
+    pending_load_config: Option<String>,
+    pending_delete_config: Option<String>,
 }
 
 // Acción pendiente tras advertencia
@@ -142,11 +154,20 @@ impl TestStressApp {
             auto_generate_report: true, // Por defecto activado
             auto_upload_report: false, // Por defecto desactivado
             remote_folder_path: String::new(), // Por defecto vacío
+            configs_info: Vec::new(),
+            config_search_query: String::new(),
+            config_current_page: 0,
+            configs_per_page: 10,
+            config_saved_message: None,
+            pending_load_config: None,
+            pending_delete_config: None,
         };
         // Solo abrir terminal si la preferencia está activa y no hay terminal abierta
         if app.show_terminal {
             app.open_terminal();
         }
+        // Cargar automáticamente todas las configuraciones disponibles
+        app.refresh_configs();
         app
     }
     
@@ -613,6 +634,15 @@ impl TestStressApp {
                 name: format!("{} - {}", self.current_request.description, chrono::Local::now().format("%Y%m%d_%H%M%S")),
                 base_url: self.base_url.clone(),
                 requests: vec![self.current_request.clone()],
+                iterations: self.iterations,
+                concurrent_requests: self.concurrent_requests,
+                wait_time: self.wait_time,
+                output_dir: self.output_dir.clone(),
+                auto_generate_report: self.auto_generate_report,
+                auto_upload_report: self.auto_upload_report,
+                remote_folder_path: self.remote_folder_path.clone(),
+                created_at: chrono::Local::now(),
+                description: Some(format!("Petición individual: {}", self.current_request.description)),
             }
         } else {
             // Guardar suite de pruebas
@@ -620,11 +650,21 @@ impl TestStressApp {
                 name: self.suite_name.clone(),
                 base_url: self.base_url.clone(),
                 requests: self.suite_requests.clone(),
+                iterations: self.iterations,
+                concurrent_requests: self.concurrent_requests,
+                wait_time: self.wait_time,
+                output_dir: self.output_dir.clone(),
+                auto_generate_report: self.auto_generate_report,
+                auto_upload_report: self.auto_upload_report,
+                remote_folder_path: self.remote_folder_path.clone(),
+                created_at: chrono::Local::now(),
+                description: Some(format!("Suite de pruebas con {} peticiones", self.suite_requests.len())),
             }
         };
         save_config(&config)?;
-        println!("Configuración guardada exitosamente: {}", config.name);
         self.refresh_configs();
+        // Mostrar mensaje de éxito
+        self.config_saved_message = Some(("✅ Configuración guardada exitosamente".to_string(), std::time::Instant::now()));
         Ok(())
     }
     
@@ -632,6 +672,14 @@ impl TestStressApp {
         let config = load_config(name)?;
         // Cargar la configuración en la pestaña apropiada
         self.base_url = config.base_url;
+        self.iterations = config.iterations;
+        self.concurrent_requests = config.concurrent_requests;
+        self.wait_time = config.wait_time;
+        self.output_dir = config.output_dir;
+        self.auto_generate_report = config.auto_generate_report;
+        self.auto_upload_report = config.auto_upload_report;
+        self.remote_folder_path = config.remote_folder_path;
+        
         if config.requests.len() == 1 {
             // Es una petición individual, cargar en pestaña 0
             self.current_tab = 0;
@@ -666,6 +714,7 @@ impl TestStressApp {
     
     fn refresh_configs(&mut self) {
         self.saved_configs = list_saved_configs().unwrap_or_default();
+        self.configs_info = list_configs_with_info().unwrap_or_default();
     }
     
     fn check_completion(&mut self) {
@@ -819,225 +868,270 @@ impl eframe::App for TestStressApp {
         if self.is_running {
             ctx.request_repaint();
         }
+        // Procesar acciones pendientes de configuraciones
+        if let Some(config_name) = self.pending_load_config.take() {
+            if let Err(e) = self.load_config(&config_name) {
+                eprintln!("Error cargando configuración: {}", e);
+            }
+        }
+        
+        if let Some(config_name) = self.pending_delete_config.take() {
+            if let Err(e) = delete_config(&config_name) {
+                eprintln!("Error eliminando configuración: {}", e);
+            } else {
+                self.refresh_configs();
+            }
+        }
+        
+        // Mostrar mensaje de guardado si corresponde
+        if let Some((ref msg, instant)) = self.config_saved_message {
+            if instant.elapsed().as_secs_f32() < 2.5 {
+                egui::Window::new("")
+                    .anchor(egui::Align2::CENTER_TOP, egui::Vec2::new(0.0, 20.0))
+                    .collapsible(false)
+                    .resizable(false)
+                    .title_bar(false)
+                    .show(ctx, |ui| {
+                        ui.colored_label(egui::Color32::GREEN, msg);
+                    });
+            } else {
+                self.config_saved_message = None;
+            }
+        }
     }
 }
 
 impl TestStressApp {
     fn render_single_test_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Prueba Individual");
-        
-        // Configuración general
-        ui.group(|ui| {
-            ui.label("Configuración General");
-            ui.horizontal(|ui| {
-                ui.label("URL Base:");
-                ui.text_edit_singleline(&mut self.base_url);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Iteraciones:");
-                ui.add(egui::DragValue::new(&mut self.iterations));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Peticiones simultáneas:");
-                ui.add(egui::DragValue::new(&mut self.concurrent_requests));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Tiempo de espera (seg):");
-                ui.add(egui::DragValue::new(&mut self.wait_time));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Directorio de salida:");
-                ui.text_edit_singleline(&mut self.output_dir);
-                if ui.button("📁 Seleccionar").clicked() {
-                    // Abrir selector de directorio nativo
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_title("Seleccionar directorio de salida")
-                        .pick_folder() {
-                        self.output_dir = path.to_string_lossy().to_string();
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.heading("Prueba Individual");
+
+            // Shortcut para cargar configuración guardada
+            ui.group(|ui| {
+                ui.label("Configuraciones");
+                ui.horizontal(|ui| {
+                    ui.label("📂 Seleccionar configuración:");
+                    let mut selected = None;
+                    egui::ComboBox::from_id_source("combo_single_config")
+                        .selected_text("Seleccionar configuración individual...")
+                        .show_ui(ui, |ui| {
+                            for config in self.configs_info.iter().filter(|c| !c.is_suite) {
+                                let label = format!("{} ({})", config.name, config.created_at.format("%Y-%m-%d %H:%M"));
+                                if ui.selectable_label(false, label).clicked() {
+                                    selected = Some(config.name.clone());
+                                }
+                            }
+                        });
+                    if let Some(name) = selected {
+                        let _ = self.load_config(&name);
                     }
+                });
+                ui.label("💡 Tip: Selecciona una configuración guardada para cargar automáticamente todos los campos");
+            });
+
+            // Configuración general
+            ui.group(|ui| {
+                ui.label("Configuración General");
+                ui.horizontal(|ui| {
+                    ui.label("URL Base:");
+                    ui.text_edit_singleline(&mut self.base_url);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Iteraciones:");
+                    ui.add(egui::DragValue::new(&mut self.iterations));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Peticiones simultáneas:");
+                    ui.add(egui::DragValue::new(&mut self.concurrent_requests));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Tiempo de espera (seg):");
+                    ui.add(egui::DragValue::new(&mut self.wait_time));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Directorio de salida:");
+                    ui.text_edit_singleline(&mut self.output_dir);
+                    if ui.button("📁 Seleccionar").clicked() {
+                        // Abrir selector de directorio nativo
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_title("Seleccionar directorio de salida")
+                            .pick_folder() {
+                            self.output_dir = path.to_string_lossy().to_string();
+                        }
+                    }
+                });
+                if self.output_dir.trim().is_empty() {
+                    ui.colored_label(egui::Color32::RED, "⚠️ Debes especificar un directorio de salida antes de ejecutar la prueba.");
+                }
+                ui.checkbox(&mut self.auto_generate_report, "📊 Generar reporte Excel automáticamente después de la prueba");
+                
+                ui.separator();
+                ui.label("Subida a Carpeta Remota");
+                if ui.checkbox(&mut self.auto_upload_report, "📤 Subir archivos automáticamente a carpeta remota").changed() {
+                    // La opción se guarda automáticamente en la estructura
+                }
+                ui.label("Se copiará toda la carpeta de la prueba (con Excel y CSV) a la carpeta especificada.");
+                
+                ui.horizontal(|ui| {
+                    ui.label("Carpeta remota:");
+                    ui.text_edit_singleline(&mut self.remote_folder_path);
+                    if ui.button("📁 Seleccionar").clicked() {
+                        // Abrir selector de directorio nativo
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_title("Seleccionar carpeta remota")
+                            .pick_folder() {
+                            self.remote_folder_path = path.to_string_lossy().to_string();
+                        }
+                    }
+                });
+                if self.auto_upload_report && self.remote_folder_path.trim().is_empty() {
+                    ui.colored_label(egui::Color32::YELLOW, "⚠️ Debes especificar una carpeta remota para subir los archivos.");
                 }
             });
-            if self.output_dir.trim().is_empty() {
-                ui.colored_label(egui::Color32::RED, "⚠️ Debes especificar un directorio de salida antes de ejecutar la prueba.");
-            }
-            ui.checkbox(&mut self.auto_generate_report, "📊 Generar reporte Excel automáticamente después de la prueba");
             
-            ui.separator();
-            ui.label("Subida a Carpeta Remota");
-            if ui.checkbox(&mut self.auto_upload_report, "📤 Subir archivos automáticamente a carpeta remota").changed() {
-                // La opción se guarda automáticamente en la estructura
-            }
-            ui.label("Se copiará toda la carpeta de la prueba (con Excel y CSV) a la carpeta especificada.");
-            
-            ui.horizontal(|ui| {
-                ui.label("Carpeta remota:");
-                ui.text_edit_singleline(&mut self.remote_folder_path);
-                if ui.button("📁 Seleccionar").clicked() {
-                    // Abrir selector de directorio nativo
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_title("Seleccionar carpeta remota")
-                        .pick_folder() {
-                        self.remote_folder_path = path.to_string_lossy().to_string();
-                    }
-                }
-            });
-            if self.auto_upload_report && self.remote_folder_path.trim().is_empty() {
-                ui.colored_label(egui::Color32::YELLOW, "⚠️ Debes especificar una carpeta remota para subir los archivos.");
-            }
-        });
-        
-        // Configuración de la petición
-        ui.group(|ui| {
-            ui.label("Configuración de la Petición");
-            ui.horizontal(|ui| {
-                ui.label("Método:");
-                egui::ComboBox::from_id_source("method")
-                    .selected_text(format!("{}", self.current_request.method))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.current_request.method, HttpMethod::GET, "GET");
-                        ui.selectable_value(&mut self.current_request.method, HttpMethod::POST, "POST");
-                        ui.selectable_value(&mut self.current_request.method, HttpMethod::PUT, "PUT");
-                        ui.selectable_value(&mut self.current_request.method, HttpMethod::PATCH, "PATCH");
-                        ui.selectable_value(&mut self.current_request.method, HttpMethod::DELETE, "DELETE");
-                        ui.selectable_value(&mut self.current_request.method, HttpMethod::HEAD, "HEAD");
-                        ui.selectable_value(&mut self.current_request.method, HttpMethod::OPTIONS, "OPTIONS");
+            // Configuración de la petición
+            ui.group(|ui| {
+                ui.label("Configuración de la Petición");
+                ui.horizontal(|ui| {
+                    ui.label("Método:");
+                    egui::ComboBox::from_id_source("method")
+                        .selected_text(format!("{}", self.current_request.method))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.current_request.method, HttpMethod::GET, "GET");
+                            ui.selectable_value(&mut self.current_request.method, HttpMethod::POST, "POST");
+                            ui.selectable_value(&mut self.current_request.method, HttpMethod::PUT, "PUT");
+                            ui.selectable_value(&mut self.current_request.method, HttpMethod::PATCH, "PATCH");
+                            ui.selectable_value(&mut self.current_request.method, HttpMethod::DELETE, "DELETE");
+                            ui.selectable_value(&mut self.current_request.method, HttpMethod::HEAD, "HEAD");
+                            ui.selectable_value(&mut self.current_request.method, HttpMethod::OPTIONS, "OPTIONS");
+                        });
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Endpoint:");
+                    ui.text_edit_singleline(&mut self.current_request.endpoint);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Descripción:");
+                    ui.text_edit_singleline(&mut self.current_request.description);
+                });
+                
+                // Headers
+                ui.label("Headers:");
+                let mut to_remove_headers = Vec::new();
+                for (i, header) in self.current_request.headers.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.text_edit_singleline(&mut header.name);
+                        ui.text_edit_singleline(&mut header.value);
+                        if ui.button("🗑️").clicked() {
+                            to_remove_headers.push(i);
+                        }
                     });
-            });
-            ui.horizontal(|ui| {
-                ui.label("Endpoint:");
-                ui.text_edit_singleline(&mut self.current_request.endpoint);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Descripción:");
-                ui.text_edit_singleline(&mut self.current_request.description);
-            });
-            
-            // Headers
-            ui.label("Headers:");
-            let mut to_remove_headers = Vec::new();
-            for (i, header) in self.current_request.headers.iter_mut().enumerate() {
-                let mut remove = false;
-                ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut header.name);
-                    ui.label(":");
-                    ui.text_edit_singleline(&mut header.value);
-                    if ui.button("❌").clicked() {
-                        remove = true;
-                    }
-                });
-                if remove {
-                    to_remove_headers.push(i);
                 }
-            }
-            for &i in to_remove_headers.iter().rev() {
-                self.current_request.headers.remove(i);
-            }
-            if ui.button("+ Agregar Header").clicked() {
-                self.current_request.headers.push(HttpHeader {
-                    name: String::new(),
-                    value: String::new(),
-                });
-            }
-            
-            // Query parameters
-            ui.label("Query Parameters:");
-            let mut to_remove_query = Vec::new();
-            for (i, param) in self.current_request.query_params.iter_mut().enumerate() {
-                let mut remove = false;
-                ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut param.name);
-                    ui.label("=");
-                    ui.text_edit_singleline(&mut param.value);
-                    if ui.button("❌").clicked() {
-                        remove = true;
-                    }
-                });
-                if remove {
-                    to_remove_query.push(i);
+                for &index in to_remove_headers.iter().rev() {
+                    self.current_request.headers.remove(index);
                 }
-            }
-            for &i in to_remove_query.iter().rev() {
-                self.current_request.query_params.remove(i);
-            }
-            if ui.button("+ Agregar Query Param").clicked() {
-                self.current_request.query_params.push(QueryParameter {
-                    name: String::new(),
-                    value: String::new(),
-                });
-            }
-            
-            // Body
-            if matches!(self.current_request.method, HttpMethod::POST | HttpMethod::PUT | HttpMethod::PATCH) {
-                ui.label("Body (JSON):");
-                if let Some(body) = &mut self.current_request.body {
-                    ui.text_edit_multiline(body);
-                } else {
-                    let mut temp = String::new();
-                    if ui.text_edit_multiline(&mut temp).changed() {
-                        self.current_request.body = Some(temp);
-                    }
+                if ui.button("➕ Agregar Header").clicked() {
+                    self.current_request.headers.push(HttpHeader {
+                        name: String::new(),
+                        value: String::new(),
+                    });
                 }
-            }
-        });
-        
-        // Controles
-        ui.horizontal(|ui| {
-            if ui.button(if self.is_running { "⏸️ Pausar" } else { "▶️ Ejecutar" }).clicked() {
-                if !self.is_running {
-                    if self.output_dir.trim().is_empty() {
-                        self.add_log("Error: Debes especificar un directorio de salida antes de ejecutar la prueba.".to_string());
-                    } else if self.show_limit_warning {
-                        // Si ya hay advertencia, solo mostrar el popup, no ejecutar
-                        // (el popup se muestra abajo)
-                    } else if self.check_limits(self.iterations, self.concurrent_requests, self.wait_time, PendingAction::RunSingleTest) {
-                        self.run_single_test();
-                    }
+                
+                // Query Parameters
+                ui.label("Query Parameters:");
+                let mut to_remove_params = Vec::new();
+                for (i, param) in self.current_request.query_params.iter_mut().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.text_edit_singleline(&mut param.name);
+                        ui.text_edit_singleline(&mut param.value);
+                        if ui.button("🗑️").clicked() {
+                            to_remove_params.push(i);
+                        }
+                    });
                 }
-            }
-            if self.is_running {
-                if ui.add(egui::Button::new("🛑 Parar").fill(egui::Color32::RED).min_size(egui::vec2(100.0, 40.0))).clicked() {
-                    self.cancel_requested = true;
-                    // Activar flag de cancelación
-                    if let Some(ref cancel_flag) = self.cancel_flag {
-                        if let Ok(mut flag) = cancel_flag.lock() {
-                            *flag = true;
+                for &index in to_remove_params.iter().rev() {
+                    self.current_request.query_params.remove(index);
+                }
+                if ui.button("➕ Agregar Query Parameter").clicked() {
+                    self.current_request.query_params.push(QueryParameter {
+                        name: String::new(),
+                        value: String::new(),
+                    });
+                }
+                
+                // Body
+                if matches!(self.current_request.method, HttpMethod::POST | HttpMethod::PUT | HttpMethod::PATCH) {
+                    ui.label("Body (JSON):");
+                    if let Some(body) = &mut self.current_request.body {
+                        ui.text_edit_multiline(body);
+                    } else {
+                        let mut temp = String::new();
+                        if ui.text_edit_multiline(&mut temp).changed() {
+                            self.current_request.body = Some(temp);
                         }
                     }
                 }
-            }
-            if ui.button("💾 Guardar Configuración").clicked() {
-                if let Err(e) = self.save_current_config() {
-                    eprintln!("Error guardando configuración: {}", e);
-                } else {
-                    ui.label("✅ Configuración guardada");
+            });
+            
+            // Controles de ejecución (dentro del scroll)
+            ui.horizontal(|ui| {
+                if ui.button(if self.is_running { "⏸️ Pausar" } else { "▶️ Ejecutar" }).clicked() {
+                    if !self.is_running {
+                        if self.output_dir.trim().is_empty() {
+                            self.add_log("Error: Debes especificar un directorio de salida antes de ejecutar la prueba.".to_string());
+                        } else if self.show_limit_warning {
+                            // Si ya hay advertencia, solo mostrar el popup, no ejecutar
+                            // (el popup se muestra abajo)
+                        } else if self.check_limits(self.iterations, self.concurrent_requests, self.wait_time, PendingAction::RunSingleTest) {
+                            self.run_single_test();
+                        }
+                    }
                 }
-            }
-        });
-        
-        // Progreso
-        if self.is_running {
-            ui.add(egui::ProgressBar::new(self.progress).text("Ejecutando..."));
-        }
-        
-        // Logs mejorados
-        ui.group(|ui| {
-            ui.label("📋 Logs de Ejecución");
-            if let Ok(logs) = self.logs.lock() {
-                if logs.is_empty() {
-                    ui.label("No hay logs disponibles. Ejecuta una prueba para ver los logs.");
-                } else {
-                    egui::ScrollArea::vertical()
-                        .max_height(200.0) // Aumentar altura
-                        .show(ui, |ui| {
-                            for log in logs.iter().rev().take(20) { // Mostrar más logs
-                                ui.label(format!("{}", log));
+                if self.is_running {
+                    if ui.add(egui::Button::new("🛑 Parar").fill(egui::Color32::RED).min_size(egui::vec2(100.0, 40.0))).clicked() {
+                        self.cancel_requested = true;
+                        // Activar flag de cancelación
+                        if let Some(ref cancel_flag) = self.cancel_flag {
+                            if let Ok(mut flag) = cancel_flag.lock() {
+                                *flag = true;
                             }
-                        });
+                        }
+                    }
                 }
+                if ui.button("💾 Guardar Configuración").clicked() {
+                    if let Err(e) = self.save_current_config() {
+                        eprintln!("Error guardando configuración: {}", e);
+                    } else {
+                        // ui.label("✅ Configuración guardada"); // Eliminado para evitar duplicidad
+                    }
+                }
+            });
+            
+            // Progreso
+            if self.is_running {
+                ui.add(egui::ProgressBar::new(self.progress).text("Ejecutando..."));
             }
+            
+            // Logs mejorados (con scroll propio)
+            ui.group(|ui| {
+                ui.label("📋 Logs de Ejecución");
+                if let Ok(logs) = self.logs.lock() {
+                    if logs.is_empty() {
+                        ui.label("No hay logs disponibles. Ejecuta una prueba para ver los logs.");
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .max_height(200.0) // Aumentar altura
+                            .show(ui, |ui| {
+                                for log in logs.iter().rev().take(20) { // Mostrar más logs
+                                    ui.label(format!("{}", log));
+                                }
+                            });
+                    }
+                }
+            });
         });
 
-        // Popup de advertencia
+        // Popup de advertencia (fuera del scroll)
         if self.show_limit_warning {
             egui::Window::new("Advertencia de límite")
                 .collapsible(false)
@@ -1065,150 +1159,196 @@ impl TestStressApp {
     }
     
     fn render_suite_test_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Suite de Pruebas");
-        
-        // Configuración de la suite
-        ui.group(|ui| {
-            ui.label("Configuración de la Suite");
-            ui.horizontal(|ui| {
-                ui.label("Nombre de la suite:");
-                ui.text_edit_singleline(&mut self.suite_name);
-            });
-            ui.horizontal(|ui| {
-                ui.label("URL Base:");
-                ui.text_edit_singleline(&mut self.base_url);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Iteraciones:");
-                ui.add(egui::DragValue::new(&mut self.iterations));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Peticiones simultáneas:");
-                ui.add(egui::DragValue::new(&mut self.concurrent_requests));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Tiempo de espera (seg):");
-                ui.add(egui::DragValue::new(&mut self.wait_time));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Directorio de salida:");
-                ui.text_edit_singleline(&mut self.output_dir);
-                if ui.button("📁 Seleccionar").clicked() {
-                    // Abrir selector de directorio nativo
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_title("Seleccionar directorio de salida")
-                        .pick_folder() {
-                        self.output_dir = path.to_string_lossy().to_string();
-                    }
-                }
-            });
-            if self.output_dir.trim().is_empty() {
-                ui.colored_label(egui::Color32::RED, "⚠️ Debes especificar un directorio de salida antes de ejecutar la suite.");
-            }
-            ui.checkbox(&mut self.auto_generate_report, "📊 Generar reporte Excel automáticamente después de la suite");
-            
-            ui.separator();
-            ui.label("Subida a Carpeta Remota");
-            if ui.checkbox(&mut self.auto_upload_report, "📤 Subir archivos automáticamente a carpeta remota").changed() {
-                // La opción se guarda automáticamente en la estructura
-            }
-            ui.label("Se copiará toda la carpeta de la suite (con Excel y CSV) a la carpeta especificada.");
-            
-            ui.horizontal(|ui| {
-                ui.label("Carpeta remota:");
-                ui.text_edit_singleline(&mut self.remote_folder_path);
-                if ui.button("📁 Seleccionar").clicked() {
-                    // Abrir selector de directorio nativo
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_title("Seleccionar carpeta remota")
-                        .pick_folder() {
-                        self.remote_folder_path = path.to_string_lossy().to_string();
-                    }
-                }
-            });
-            if self.auto_upload_report && self.remote_folder_path.trim().is_empty() {
-                ui.colored_label(egui::Color32::YELLOW, "⚠️ Debes especificar una carpeta remota para subir los archivos.");
-            }
-        });
-        
-        // Lista de peticiones
-        ui.group(|ui| {
-            ui.label("Peticiones en la Suite");
-            let mut to_remove = Vec::new();
-            for (i, request) in self.suite_requests.iter_mut().enumerate() {
-                let mut remove = false;
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.heading("Suite de Pruebas");
+
+            // Shortcut para cargar configuración guardada de suite
+            ui.group(|ui| {
+                ui.label("Configuraciones");
                 ui.horizontal(|ui| {
-                    ui.label(format!("{}. {} {} - {}", i + 1, request.method, request.endpoint, request.description));
-                    if ui.button("❌").clicked() {
-                        remove = true;
+                    ui.label("📂 Seleccionar suite:");
+                    let mut selected = None;
+                    egui::ComboBox::from_id_source("combo_suite_config")
+                        .selected_text("Seleccionar configuración de suite...")
+                        .show_ui(ui, |ui| {
+                            for config in self.configs_info.iter().filter(|c| c.is_suite) {
+                                let label = format!("{} ({})", config.name, config.created_at.format("%Y-%m-%d %H:%M"));
+                                if ui.selectable_label(false, label).clicked() {
+                                    selected = Some(config.name.clone());
+                                }
+                            }
+                        });
+                    if let Some(name) = selected {
+                        let _ = self.load_config(&name);
                     }
                 });
-                if remove {
-                    to_remove.push(i);
-                }
-            }
-            // Eliminar fuera del bucle
-            for &i in to_remove.iter().rev() {
-                self.suite_requests.remove(i);
-            }
-            if ui.button("+ Agregar Petición").clicked() {
-                self.suite_requests.push(TestRequest::default());
-            }
-        });
-        
-        // Controles
-        ui.horizontal(|ui| {
-            if ui.button(if self.is_running { "⏸️ Pausar" } else { "▶️ Ejecutar Suite" }).clicked() {
-                if !self.is_running {
-                    if self.output_dir.trim().is_empty() {
-                        self.add_log("Error: Debes especificar un directorio de salida antes de ejecutar la suite.".to_string());
-                    } else if self.check_limits(self.iterations, self.concurrent_requests, self.wait_time, PendingAction::RunSuiteTest) {
-                        self.run_suite_test();
+                ui.label("💡 Tip: Selecciona una suite guardada para cargar automáticamente todas las peticiones y configuraciones");
+            });
+
+            // Configuración de la suite
+            ui.group(|ui| {
+                ui.label("Configuración de la Suite");
+                ui.horizontal(|ui| {
+                    ui.label("Nombre de la suite:");
+                    ui.text_edit_singleline(&mut self.suite_name);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("URL Base:");
+                    ui.text_edit_singleline(&mut self.base_url);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Iteraciones:");
+                    ui.add(egui::DragValue::new(&mut self.iterations));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Peticiones simultáneas:");
+                    ui.add(egui::DragValue::new(&mut self.concurrent_requests));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Tiempo de espera (seg):");
+                    ui.add(egui::DragValue::new(&mut self.wait_time));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Directorio de salida:");
+                    ui.text_edit_singleline(&mut self.output_dir);
+                    if ui.button("📁 Seleccionar").clicked() {
+                        // Abrir selector de directorio nativo
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_title("Seleccionar directorio de salida")
+                            .pick_folder() {
+                            self.output_dir = path.to_string_lossy().to_string();
+                        }
                     }
+                });
+                if self.output_dir.trim().is_empty() {
+                    ui.colored_label(egui::Color32::RED, "⚠️ Debes especificar un directorio de salida antes de ejecutar la suite.");
                 }
-            }
-            if self.is_running {
-                if ui.add(egui::Button::new("🛑 Parar").fill(egui::Color32::RED).min_size(egui::vec2(100.0, 40.0))).clicked() {
-                    self.cancel_requested = true;
-                    // Activar flag de cancelación
-                    if let Some(ref cancel_flag) = self.cancel_flag {
-                        if let Ok(mut flag) = cancel_flag.lock() {
-                            *flag = true;
+                ui.checkbox(&mut self.auto_generate_report, "📊 Generar reporte Excel automáticamente después de la suite");
+                
+                ui.separator();
+                ui.label("Subida a Carpeta Remota");
+                if ui.checkbox(&mut self.auto_upload_report, "📤 Subir archivos automáticamente a carpeta remota").changed() {
+                    // La opción se guarda automáticamente en la estructura
+                }
+                ui.label("Se copiará toda la carpeta de la suite (con Excel y CSV) a la carpeta especificada.");
+                
+                ui.horizontal(|ui| {
+                    ui.label("Carpeta remota:");
+                    ui.text_edit_singleline(&mut self.remote_folder_path);
+                    if ui.button("📁 Seleccionar").clicked() {
+                        // Abrir selector de directorio nativo
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_title("Seleccionar carpeta remota")
+                            .pick_folder() {
+                            self.remote_folder_path = path.to_string_lossy().to_string();
+                        }
+                    }
+                });
+                if self.auto_upload_report && self.remote_folder_path.trim().is_empty() {
+                    ui.colored_label(egui::Color32::YELLOW, "⚠️ Debes especificar una carpeta remota para subir los archivos.");
+                }
+            });
+            
+            // Lista de peticiones
+            ui.group(|ui| {
+                ui.label("Peticiones de la Suite");
+                let mut to_remove = Vec::new();
+                for (i, request) in self.suite_requests.iter_mut().enumerate() {
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("Petición {}", i + 1));
+                            if ui.button("🗑️").clicked() {
+                                to_remove.push(i);
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Método:");
+                            egui::ComboBox::from_id_source(format!("method_{}", i))
+                                .selected_text(format!("{}", request.method))
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut request.method, HttpMethod::GET, "GET");
+                                    ui.selectable_value(&mut request.method, HttpMethod::POST, "POST");
+                                    ui.selectable_value(&mut request.method, HttpMethod::PUT, "PUT");
+                                    ui.selectable_value(&mut request.method, HttpMethod::PATCH, "PATCH");
+                                    ui.selectable_value(&mut request.method, HttpMethod::DELETE, "DELETE");
+                                    ui.selectable_value(&mut request.method, HttpMethod::HEAD, "HEAD");
+                                    ui.selectable_value(&mut request.method, HttpMethod::OPTIONS, "OPTIONS");
+                                });
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Endpoint:");
+                            ui.text_edit_singleline(&mut request.endpoint);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Descripción:");
+                            ui.text_edit_singleline(&mut request.description);
+                        });
+                    });
+                }
+                for &index in to_remove.iter().rev() {
+                    self.suite_requests.remove(index);
+                }
+                if ui.button("➕ Agregar Petición").clicked() {
+                    self.suite_requests.push(TestRequest::default());
+                }
+            });
+            
+            // Controles de ejecución (dentro del scroll)
+            ui.horizontal(|ui| {
+                if ui.button(if self.is_running { "⏸️ Pausar" } else { "▶️ Ejecutar Suite" }).clicked() {
+                    if !self.is_running {
+                        if self.output_dir.trim().is_empty() {
+                            self.add_log("Error: Debes especificar un directorio de salida antes de ejecutar la suite.".to_string());
+                        } else if self.check_limits(self.iterations, self.concurrent_requests, self.wait_time, PendingAction::RunSuiteTest) {
+                            self.run_suite_test();
                         }
                     }
                 }
-            }
-            if ui.button("💾 Guardar Suite").clicked() {
-                if let Err(e) = self.save_current_config() {
-                    eprintln!("Error guardando suite: {}", e);
-                }
-            }
-        });
-        
-        // Progreso
-        if self.is_running {
-            ui.add(egui::ProgressBar::new(self.progress).text("Ejecutando suite..."));
-        }
-        
-        // Logs mejorados para suite
-        ui.group(|ui| {
-            ui.label("📋 Logs de Ejecución");
-            if let Ok(logs) = self.logs.lock() {
-                if logs.is_empty() {
-                    ui.label("No hay logs disponibles. Ejecuta una suite para ver los logs.");
-                } else {
-                    egui::ScrollArea::vertical()
-                        .max_height(200.0) // Aumentar altura
-                        .show(ui, |ui| {
-                            for log in logs.iter().rev().take(20) { // Mostrar más logs
-                                ui.label(format!("{}", log));
+                if self.is_running {
+                    if ui.add(egui::Button::new("🛑 Parar").fill(egui::Color32::RED).min_size(egui::vec2(100.0, 40.0))).clicked() {
+                        self.cancel_requested = true;
+                        // Activar flag de cancelación
+                        if let Some(ref cancel_flag) = self.cancel_flag {
+                            if let Ok(mut flag) = cancel_flag.lock() {
+                                *flag = true;
                             }
-                        });
+                        }
+                    }
                 }
+                if ui.button("💾 Guardar Suite").clicked() {
+                    if let Err(e) = self.save_current_config() {
+                        eprintln!("Error guardando suite: {}", e);
+                    } else {
+                        // ui.label("✅ Configuración guardada"); // Eliminado para evitar duplicidad
+                    }
+                }
+            });
+            
+            // Progreso
+            if self.is_running {
+                ui.add(egui::ProgressBar::new(self.progress).text("Ejecutando suite..."));
             }
+            
+            // Logs mejorados para suite (con scroll propio)
+            ui.group(|ui| {
+                ui.label("📋 Logs de Ejecución");
+                if let Ok(logs) = self.logs.lock() {
+                    if logs.is_empty() {
+                        ui.label("No hay logs disponibles. Ejecuta una suite para ver los logs.");
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .max_height(200.0) // Aumentar altura
+                            .show(ui, |ui| {
+                                for log in logs.iter().rev().take(20) { // Mostrar más logs
+                                    ui.label(format!("{}", log));
+                                }
+                            });
+                    }
+                }
+            });
         });
 
-        // Popup de advertencia
+        // Popup de advertencia (fuera del scroll)
         if self.show_limit_warning {
             egui::Window::new("Advertencia de límite")
                 .collapsible(false)
@@ -1235,9 +1375,24 @@ impl TestStressApp {
         }
     }
     
+    fn load_config_by_name(&mut self, name: &str) {
+        if let Err(e) = self.load_config(name) {
+            eprintln!("Error cargando configuración: {}", e);
+        }
+    }
+    
+    fn delete_config_by_name(&mut self, name: &str) {
+        if let Err(e) = delete_config(name) {
+            eprintln!("Error eliminando configuración: {}", e);
+        } else {
+            self.refresh_configs();
+        }
+    }
+
     fn render_configs_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Configuraciones Guardadas");
         
+        // Barra de herramientas
         ui.horizontal(|ui| {
             if ui.button("🔄 Actualizar").clicked() {
                 self.refresh_configs();
@@ -1260,28 +1415,42 @@ impl TestStressApp {
             }
         });
         
-        if self.saved_configs.is_empty() {
+        if self.configs_info.is_empty() {
             ui.label("No hay configuraciones guardadas.");
             ui.label("Las configuraciones se guardan en la carpeta './configs/'");
         } else {
-            ui.label(format!("Configuraciones encontradas: {}", self.saved_configs.len()));
-            for config_name in self.saved_configs.clone() {
-                ui.horizontal(|ui| {
-                    ui.label(&config_name);
-                    if ui.button("📂 Cargar").clicked() {
-                        if let Err(e) = self.load_config(&config_name) {
-                            eprintln!("Error cargando configuración: {}", e);
-                        } else {
-                            ui.label("✅ Cargada");
-                        }
-                    }
-                    if ui.button("🗑️ Eliminar").clicked() {
-                        if let Err(e) = delete_config(&config_name) {
-                            eprintln!("Error eliminando configuración: {}", e);
-                        } else {
-                            self.refresh_configs();
-                        }
-                    }
+            ui.label(format!("Configuraciones encontradas: {}", self.configs_info.len()));
+            
+            // Mostrar configuraciones
+            for config_info in &self.configs_info {
+                ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        // Icono según tipo
+                        let icon = if config_info.is_suite { "📋" } else { "📄" };
+                        ui.label(icon);
+                        
+                        // Información principal
+                        ui.vertical(|ui| {
+                            ui.label(format!("📝 {}", config_info.name));
+                            if let Some(desc) = &config_info.description {
+                                ui.colored_label(egui::Color32::GRAY, desc);
+                            }
+                            ui.horizontal(|ui| {
+                                ui.label(format!("📊 {} endpoints", config_info.request_count));
+                                ui.label(format!("📅 {}", config_info.created_at.format("%Y-%m-%d %H:%M")));
+                            });
+                        });
+                        
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let config_name = config_info.name.clone();
+                            if ui.button("📂 Cargar").clicked() {
+                                self.pending_load_config = Some(config_name.clone());
+                            }
+                            if ui.button("🗑️ Eliminar").clicked() {
+                                self.pending_delete_config = Some(config_name.clone());
+                            }
+                        });
+                    });
                 });
             }
         }

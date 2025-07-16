@@ -193,13 +193,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Save { name, base_url, requests_file }) => {
             let content = std::fs::read_to_string(requests_file)?;
             let requests: Vec<models::TestRequest> = serde_json::from_str(&content)?;
-            
+            let now = chrono::Local::now();
             let config = models::SavedConfig {
                 name,
                 base_url,
-                requests,
+                requests: requests.clone(),
+                iterations: 10,
+                concurrent_requests: 1,
+                wait_time: 1,
+                output_dir: "./results".to_string(),
+                auto_generate_report: true,
+                auto_upload_report: false,
+                remote_folder_path: String::new(),
+                created_at: now,
+                description: Some(format!("Guardado por CLI con {} peticiones", requests.len())),
             };
-            
             cli::save_test_config(&config).await?;
         }
         Some(Commands::Load { name }) => {
