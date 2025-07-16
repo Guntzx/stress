@@ -2,6 +2,16 @@ use std::fs;
 use std::path::PathBuf;
 use crate::models::SavedConfig;
 use std::env;
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigInfo {
+    pub name: String,
+    pub created_at: chrono::DateTime<chrono::Local>,
+    pub description: Option<String>,
+    pub request_count: usize,
+    pub is_suite: bool,
+}
 
 #[cfg(target_os = "windows")]
 use std::process::Command;
@@ -272,4 +282,85 @@ pub fn delete_config(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
     
     Ok(())
+}
+
+pub fn get_config_info(name: &str) -> Result<ConfigInfo, Box<dyn std::error::Error>> {
+    let config = load_config(name)?;
+    Ok(ConfigInfo {
+        name: config.name.clone(),
+        created_at: config.created_at,
+        description: config.description.clone(),
+        request_count: config.requests.len(),
+        is_suite: config.requests.len() > 1,
+    })
+}
+
+pub fn list_configs_with_info() -> Result<Vec<ConfigInfo>, Box<dyn std::error::Error>> {
+    let user_dir = get_user_data_dir();
+    
+    #[cfg(target_os = "windows")]
+    {
+        let config_dir = format!("{}\\configs", user_dir);
+        if !PathBuf::from(&config_dir).exists() {
+            return Ok(Vec::new());
+        }
+        
+        let mut configs = Vec::new();
+        for entry in fs::read_dir(config_dir)? {
+            let entry = entry?;
+            if let Some(extension) = entry.path().extension() {
+                if extension == "json" {
+                    if let Some(name) = entry.path().file_stem() {
+                        let name_str = name.to_string_lossy().to_string();
+                        if let Ok(info) = get_config_info(&name_str) {
+                            configs.push(info);
+                        }
+                    }
+                }
+            }
+        }
+        // Ordenar por fecha de creación (más reciente primero)
+        configs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(configs)
+    }
+    
+    #[cfg(not(target_os = "windows"))]
+    {
+        let config_dir = format!("{}/.stress/configs", user_dir);
+        if !PathBuf::from(&config_dir).exists() {
+            return Ok(Vec::new());
+        }
+        
+        let mut configs = Vec::new();
+        for entry in fs::read_dir(config_dir)? {
+            let entry = entry?;
+            if let Some(extension) = entry.path().extension() {
+                if extension == "json" {
+                    if let Some(name) = entry.path().file_stem() {
+                        let name_str = name.to_string_lossy().to_string();
+                        if let Ok(info) = get_config_info(&name_str) {
+                            configs.push(info);
+                        }
+                    }
+                }
+            }
+        }
+        // Ordenar por fecha de creación (más reciente primero)
+        configs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(configs)
+    }
+}
+
+pub fn search_configs(query: &str) -> Result<Vec<ConfigInfo>, Box<dyn std::error::Error>> {
+    let all_configs = list_configs_with_info()?;
+    let query_lower = query.to_lowercase();
+    
+    let filtered = all_configs.into_iter()
+        .filter(|config| {
+            config.name.to_lowercase().contains(&query_lower) ||
+            config.description.as_ref().map_or(false, |desc| desc.to_lowercase().contains(&query_lower))
+        })
+        .collect();
+    
+    Ok(filtered)
 } 
