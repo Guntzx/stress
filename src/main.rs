@@ -8,6 +8,7 @@ mod config;
 mod gui;
 mod load_test;
 mod models;
+mod monitor;
 mod report_generator;
 
 #[derive(Parser)]

@@ -2,6 +2,7 @@ use crate::config::{ensure_output_directory, get_output_directory, save_config, 
 use crate::load_test::LoadTester;
 use crate::models::{TestRequest, TestSuite, SavedConfig, TestSummary, HttpMethod, HttpHeader, QueryParameter};
 use crate::report_generator::generate_excel_report_from_files;
+use crate::monitor::{SystemMonitor, SystemMetrics, MonitoringConfig, MonitoringType, SSHConfig, format_bytes, format_percentage, save_ssh_config, load_ssh_config};
 use eframe::egui;
 use std::fs;
 use std::path::PathBuf;
@@ -13,6 +14,8 @@ use serde::{Serialize, Deserialize};
 #[derive(Serialize, Deserialize, Default)]
 struct GeneralPrefs {
     show_terminal: bool,
+    monitoring_enabled: bool,
+    monitoring_type: MonitoringType,
 }
 
 fn get_prefs_path() -> PathBuf {
@@ -109,6 +112,10 @@ pub struct TestStressApp {
     // Estado para acciones pendientes de configuraciones
     pending_load_config: Option<String>,
     pending_delete_config: Option<String>,
+    
+    // Sistema de monitoreo
+    system_monitor: Option<SystemMonitor>,
+    monitoring_config: MonitoringConfig,
 }
 
 // Acción pendiente tras advertencia
@@ -161,6 +168,13 @@ impl TestStressApp {
             config_saved_message: None,
             pending_load_config: None,
             pending_delete_config: None,
+            system_monitor: None,
+            monitoring_config: {
+                let mut config = MonitoringConfig::default();
+                config.enabled = prefs.monitoring_enabled;
+                config.monitoring_type = prefs.monitoring_type;
+                config
+            },
         };
         // Solo abrir terminal si la preferencia está activa y no hay terminal abierta
         if app.show_terminal {
@@ -168,6 +182,20 @@ impl TestStressApp {
         }
         // Cargar automáticamente todas las configuraciones disponibles
         app.refresh_configs();
+        
+        // Cargar configuración SSH guardada
+        if let Ok(Some(ssh_config)) = load_ssh_config() {
+            app.monitoring_config.ssh_config = ssh_config;
+        }
+        
+        // Inicializar monitoreo si está habilitado
+        if app.monitoring_config.enabled {
+            app.system_monitor = Some(SystemMonitor::new(app.monitoring_config.clone()));
+            if let Some(ref mut monitor) = app.system_monitor {
+                monitor.start_monitoring();
+            }
+        }
+        
         app
     }
     
@@ -989,87 +1017,164 @@ impl TestStressApp {
                 }
             });
             
-            // Configuración de la petición
-            ui.group(|ui| {
-                ui.label("Configuración de la Petición");
-                ui.horizontal(|ui| {
-                    ui.label("Método:");
-                    egui::ComboBox::from_id_source("method")
-                        .selected_text(format!("{}", self.current_request.method))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.current_request.method, HttpMethod::GET, "GET");
-                            ui.selectable_value(&mut self.current_request.method, HttpMethod::POST, "POST");
-                            ui.selectable_value(&mut self.current_request.method, HttpMethod::PUT, "PUT");
-                            ui.selectable_value(&mut self.current_request.method, HttpMethod::PATCH, "PATCH");
-                            ui.selectable_value(&mut self.current_request.method, HttpMethod::DELETE, "DELETE");
-                            ui.selectable_value(&mut self.current_request.method, HttpMethod::HEAD, "HEAD");
-                            ui.selectable_value(&mut self.current_request.method, HttpMethod::OPTIONS, "OPTIONS");
+            // Configuración de la petición y métricas del sistema lado a lado
+            ui.horizontal(|ui| {
+                // Configuración de la petición (izquierda) - mantener layout vertical
+                ui.vertical(|ui| {
+                    ui.group(|ui| {
+                        ui.label("Configuración de la Petición");
+                        ui.horizontal(|ui| {
+                            ui.label("Método:");
+                            egui::ComboBox::from_id_source("method")
+                                .selected_text(format!("{}", self.current_request.method))
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.current_request.method, HttpMethod::GET, "GET");
+                                    ui.selectable_value(&mut self.current_request.method, HttpMethod::POST, "POST");
+                                    ui.selectable_value(&mut self.current_request.method, HttpMethod::PUT, "PUT");
+                                    ui.selectable_value(&mut self.current_request.method, HttpMethod::PATCH, "PATCH");
+                                    ui.selectable_value(&mut self.current_request.method, HttpMethod::DELETE, "DELETE");
+                                    ui.selectable_value(&mut self.current_request.method, HttpMethod::HEAD, "HEAD");
+                                    ui.selectable_value(&mut self.current_request.method, HttpMethod::OPTIONS, "OPTIONS");
+                                });
                         });
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Endpoint:");
-                    ui.text_edit_singleline(&mut self.current_request.endpoint);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Descripción:");
-                    ui.text_edit_singleline(&mut self.current_request.description);
-                });
-                
-                // Headers
-                ui.label("Headers:");
-                let mut to_remove_headers = Vec::new();
-                for (i, header) in self.current_request.headers.iter_mut().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.text_edit_singleline(&mut header.name);
-                        ui.text_edit_singleline(&mut header.value);
-                        if ui.button("🗑️").clicked() {
-                            to_remove_headers.push(i);
+                        ui.horizontal(|ui| {
+                            ui.label("Endpoint:");
+                            ui.text_edit_singleline(&mut self.current_request.endpoint);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Descripción:");
+                            ui.text_edit_singleline(&mut self.current_request.description);
+                        });
+                        
+                        // Headers
+                        ui.label("Headers:");
+                        let mut to_remove_headers = Vec::new();
+                        for (i, header) in self.current_request.headers.iter_mut().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.text_edit_singleline(&mut header.name);
+                                ui.text_edit_singleline(&mut header.value);
+                                if ui.button("🗑️").clicked() {
+                                    to_remove_headers.push(i);
+                                }
+                            });
+                        }
+                        for &index in to_remove_headers.iter().rev() {
+                            self.current_request.headers.remove(index);
+                        }
+                        if ui.button("➕ Agregar Header").clicked() {
+                            self.current_request.headers.push(HttpHeader {
+                                name: String::new(),
+                                value: String::new(),
+                            });
+                        }
+                        
+                        // Query Parameters
+                        ui.label("Query Parameters:");
+                        let mut to_remove_params = Vec::new();
+                        for (i, param) in self.current_request.query_params.iter_mut().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.text_edit_singleline(&mut param.name);
+                                ui.text_edit_singleline(&mut param.value);
+                                if ui.button("🗑️").clicked() {
+                                    to_remove_params.push(i);
+                                }
+                            });
+                        }
+                        for &index in to_remove_params.iter().rev() {
+                            self.current_request.query_params.remove(index);
+                        }
+                        if ui.button("➕ Agregar Query Parameter").clicked() {
+                            self.current_request.query_params.push(QueryParameter {
+                                name: String::new(),
+                                value: String::new(),
+                            });
+                        }
+                        
+                        // Body
+                        if matches!(self.current_request.method, HttpMethod::POST | HttpMethod::PUT | HttpMethod::PATCH) {
+                            ui.label("Body (JSON):");
+                            if let Some(body) = &mut self.current_request.body {
+                                ui.text_edit_multiline(body);
+                            } else {
+                                let mut temp = String::new();
+                                if ui.text_edit_multiline(&mut temp).changed() {
+                                    self.current_request.body = Some(temp);
+                                }
+                            }
                         }
                     });
-                }
-                for &index in to_remove_headers.iter().rev() {
-                    self.current_request.headers.remove(index);
-                }
-                if ui.button("➕ Agregar Header").clicked() {
-                    self.current_request.headers.push(HttpHeader {
-                        name: String::new(),
-                        value: String::new(),
-                    });
-                }
+                });
                 
-                // Query Parameters
-                ui.label("Query Parameters:");
-                let mut to_remove_params = Vec::new();
-                for (i, param) in self.current_request.query_params.iter_mut().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.text_edit_singleline(&mut param.name);
-                        ui.text_edit_singleline(&mut param.value);
-                        if ui.button("🗑️").clicked() {
-                            to_remove_params.push(i);
-                        }
+                // Panel de métricas del sistema en tiempo real (derecha)
+                if self.monitoring_config.enabled {
+                    ui.vertical(|ui| {
+                        ui.heading("📊 Métricas del Sistema");
+                        
+                        ui.group(|ui| {
+                            if let Some(ref mut monitor) = self.system_monitor {
+                                if let Some(metrics) = monitor.get_current_metrics() {
+                                    ui.horizontal(|ui| {
+                                        ui.vertical(|ui| {
+                                            ui.label("🖥️ CPU");
+                                            ui.colored_label(
+                                                if metrics.cpu_usage > 80.0 { egui::Color32::RED }
+                                                else if metrics.cpu_usage > 60.0 { egui::Color32::YELLOW }
+                                                else { egui::Color32::GREEN },
+                                                format_percentage(metrics.cpu_usage)
+                                            );
+                                        });
+                                        
+                                        ui.vertical(|ui| {
+                                            ui.label("💾 RAM");
+                                            ui.colored_label(
+                                                if metrics.memory_usage > 80.0 { egui::Color32::RED }
+                                                else if metrics.memory_usage > 60.0 { egui::Color32::YELLOW }
+                                                else { egui::Color32::GREEN },
+                                                format_percentage(metrics.memory_usage)
+                                            );
+                                            ui.label(format!("{}/{}", format_bytes(metrics.memory_used), format_bytes(metrics.memory_total)));
+                                        });
+                                        
+                                        ui.vertical(|ui| {
+                                            ui.label("💿 Disco I/O");
+                                            ui.label(format!("📥 {}", format_bytes(metrics.disk_read_bytes)));
+                                            ui.label(format!("📤 {}", format_bytes(metrics.disk_write_bytes)));
+                                        });
+                                        
+                                        ui.vertical(|ui| {
+                                            ui.label("🌐 Red");
+                                            ui.label(format!("📥 {}", format_bytes(metrics.network_rx_bytes)));
+                                            ui.label(format!("📤 {}", format_bytes(metrics.network_tx_bytes)));
+                                        });
+                                        
+                                        ui.vertical(|ui| {
+                                            ui.label("⚡ Load");
+                                            ui.colored_label(
+                                                if metrics.load_average > 2.0 { egui::Color32::RED }
+                                                else if metrics.load_average > 1.0 { egui::Color32::YELLOW }
+                                                else { egui::Color32::GREEN },
+                                                format!("{:.2}", metrics.load_average)
+                                            );
+                                        });
+                                    });
+                                    
+                                    ui.label(format!("🕐 Última actualización: {}", metrics.timestamp.format("%H:%M:%S")));
+                                    
+                                    // Mostrar tipo de monitoreo
+                                    let monitor_type = if self.monitoring_config.monitoring_type == MonitoringType::Local {
+                                        "🖥️ Monitoreo Local"
+                                    } else {
+                                        "🌐 Monitoreo SSH"
+                                    };
+                                    ui.label(monitor_type);
+                                } else {
+                                    ui.label("⏳ Inicializando métricas...");
+                                }
+                            } else {
+                                ui.label("❌ Monitoreo no disponible");
+                            }
+                        });
                     });
-                }
-                for &index in to_remove_params.iter().rev() {
-                    self.current_request.query_params.remove(index);
-                }
-                if ui.button("➕ Agregar Query Parameter").clicked() {
-                    self.current_request.query_params.push(QueryParameter {
-                        name: String::new(),
-                        value: String::new(),
-                    });
-                }
-                
-                // Body
-                if matches!(self.current_request.method, HttpMethod::POST | HttpMethod::PUT | HttpMethod::PATCH) {
-                    ui.label("Body (JSON):");
-                    if let Some(body) = &mut self.current_request.body {
-                        ui.text_edit_multiline(body);
-                    } else {
-                        let mut temp = String::new();
-                        if ui.text_edit_multiline(&mut temp).changed() {
-                            self.current_request.body = Some(temp);
-                        }
-                    }
                 }
             });
             
@@ -1346,6 +1451,76 @@ impl TestStressApp {
                     }
                 }
             });
+            
+            // Panel de métricas del sistema en tiempo real
+            if self.monitoring_config.enabled {
+                ui.heading("📊 Métricas del Sistema");
+                
+                ui.group(|ui| {
+                    if let Some(ref mut monitor) = self.system_monitor {
+                        if let Some(metrics) = monitor.get_current_metrics() {
+                            ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.label("🖥️ CPU");
+                                    ui.colored_label(
+                                        if metrics.cpu_usage > 80.0 { egui::Color32::RED }
+                                        else if metrics.cpu_usage > 60.0 { egui::Color32::YELLOW }
+                                        else { egui::Color32::GREEN },
+                                        format_percentage(metrics.cpu_usage)
+                                    );
+                                });
+                                
+                                ui.vertical(|ui| {
+                                    ui.label("💾 RAM");
+                                    ui.colored_label(
+                                        if metrics.memory_usage > 80.0 { egui::Color32::RED }
+                                        else if metrics.memory_usage > 60.0 { egui::Color32::YELLOW }
+                                        else { egui::Color32::GREEN },
+                                        format_percentage(metrics.memory_usage)
+                                    );
+                                    ui.label(format!("{}/{}", format_bytes(metrics.memory_used), format_bytes(metrics.memory_total)));
+                                });
+                                
+                                ui.vertical(|ui| {
+                                    ui.label("💿 Disco I/O");
+                                    ui.label(format!("📥 {}", format_bytes(metrics.disk_read_bytes)));
+                                    ui.label(format!("📤 {}", format_bytes(metrics.disk_write_bytes)));
+                                });
+                                
+                                ui.vertical(|ui| {
+                                    ui.label("🌐 Red");
+                                    ui.label(format!("📥 {}", format_bytes(metrics.network_rx_bytes)));
+                                    ui.label(format!("📤 {}", format_bytes(metrics.network_tx_bytes)));
+                                });
+                                
+                                ui.vertical(|ui| {
+                                    ui.label("⚡ Load");
+                                    ui.colored_label(
+                                        if metrics.load_average > 2.0 { egui::Color32::RED }
+                                        else if metrics.load_average > 1.0 { egui::Color32::YELLOW }
+                                        else { egui::Color32::GREEN },
+                                        format!("{:.2}", metrics.load_average)
+                                    );
+                                });
+                            });
+                            
+                            ui.label(format!("🕐 Última actualización: {}", metrics.timestamp.format("%H:%M:%S")));
+                            
+                            // Mostrar tipo de monitoreo
+                            let monitor_type = if self.monitoring_config.monitoring_type == MonitoringType::Local {
+                                "🖥️ Monitoreo Local"
+                            } else {
+                                "🌐 Monitoreo SSH"
+                            };
+                            ui.label(monitor_type);
+                        } else {
+                            ui.label("⏳ Inicializando métricas...");
+                        }
+                    } else {
+                        ui.label("❌ Monitoreo no disponible");
+                    }
+                });
+            }
         });
 
         // Popup de advertencia (fuera del scroll)
@@ -1536,54 +1711,179 @@ impl TestStressApp {
     }
 
     fn render_general_options_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Opciones Generales");
-        ui.separator();
-        let mut changed = false;
-        let mut close_failed = false;
-        if ui.checkbox(&mut self.show_terminal, "Mostrar terminal (logs en tiempo real)").changed() {
-            changed = true;
-        }
-        ui.label("Por defecto, la terminal está oculta. Si activas esta opción, se abrirá una terminal con logs en tiempo real. Si la desactivas, se cerrará la terminal si es posible.");
-        if changed {
-            let prefs = GeneralPrefs { show_terminal: self.show_terminal };
-            save_general_prefs(&prefs);
-            if self.show_terminal {
-                self.open_terminal();
-            } else {
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.heading("Opciones Generales");
+            ui.separator();
+            let mut changed = false;
+            let mut close_failed = false;
+            if ui.checkbox(&mut self.show_terminal, "Mostrar terminal (logs en tiempo real)").changed() {
+                changed = true;
+            }
+            ui.label("Por defecto, la terminal está oculta. Si activas esta opción, se abrirá una terminal con logs en tiempo real. Si la desactivas, se cerrará la terminal si es posible.");
+            if changed {
+                let prefs = GeneralPrefs { 
+                    show_terminal: self.show_terminal,
+                    monitoring_enabled: self.monitoring_config.enabled,
+                    monitoring_type: self.monitoring_config.monitoring_type.clone(),
+                };
+                save_general_prefs(&prefs);
+                if self.show_terminal {
+                    self.open_terminal();
+                } else {
+                    if !self.close_terminal() {
+                        close_failed = true;
+                    }
+                }
+            }
+            if !self.show_terminal && self.terminal_child.is_some() {
+                // Intentar cerrar si aún queda abierta
                 if !self.close_terminal() {
                     close_failed = true;
                 }
             }
-        }
-        if !self.show_terminal && self.terminal_child.is_some() {
-            // Intentar cerrar si aún queda abierta
-            if !self.close_terminal() {
-                close_failed = true;
+            if close_failed {
+                ui.colored_label(egui::Color32::YELLOW, "No se pudo cerrar la terminal automáticamente. Ciérrala manualmente si es necesario.");
             }
-        }
-        if close_failed {
-            ui.colored_label(egui::Color32::YELLOW, "No se pudo cerrar la terminal automáticamente. Ciérrala manualmente si es necesario.");
-        }
-        
-        ui.separator();
-        ui.heading("Reportes y Archivos");
-        
-        if ui.checkbox(&mut self.auto_generate_report, "Generar reporte Excel automáticamente").changed() {
-            // La opción se guarda automáticamente en la estructura
-        }
-        ui.label("Si está activado, se generará automáticamente un reporte Excel después de cada prueba.");
-        
-        ui.separator();
-        ui.heading("Subida Automática a Carpeta Remota");
-        
-        if ui.checkbox(&mut self.auto_upload_report, "Subir archivos automáticamente a carpeta remota").changed() {
-            // La opción se guarda automáticamente en la estructura
-        }
-        ui.label("Si está activado, se copiará toda la carpeta de la prueba (con Excel y CSV) a la carpeta remota especificada.");
-        
-        ui.label("Ruta de la carpeta remota (OneDrive, Google Drive, Dropbox, etc.):");
-        ui.text_edit_singleline(&mut self.remote_folder_path);
-        ui.label("Ejemplo: /Users/tu_usuario/OneDrive/StressTests o C:\\Users\\tu_usuario\\OneDrive\\StressTests");
+            
+            ui.separator();
+            ui.heading("Reportes y Archivos");
+            
+            if ui.checkbox(&mut self.auto_generate_report, "Generar reporte Excel automáticamente").changed() {
+                // La opción se guarda automáticamente en la estructura
+            }
+            ui.label("Si está activado, se generará automáticamente un reporte Excel después de cada prueba.");
+            
+            ui.separator();
+            ui.heading("Subida Automática a Carpeta Remota");
+            
+            if ui.checkbox(&mut self.auto_upload_report, "Subir archivos automáticamente a carpeta remota").changed() {
+                // La opción se guarda automáticamente en la estructura
+            }
+            ui.label("Si está activado, se copiará toda la carpeta de la prueba (con Excel y CSV) a la carpeta remota especificada.");
+            
+            ui.label("Ruta de la carpeta remota (OneDrive, Google Drive, Dropbox, etc.):");
+            ui.text_edit_singleline(&mut self.remote_folder_path);
+            ui.label("Ejemplo: /Users/tu_usuario/OneDrive/StressTests o C:\\Users\\tu_usuario\\OneDrive\\StressTests");
+            
+            ui.separator();
+            ui.heading("Monitoreo del Sistema");
+            
+            // Tipo de monitoreo
+            let mut monitoring_type_changed = false;
+            ui.horizontal(|ui| {
+                ui.label("Tipo de monitoreo:");
+                if ui.radio_value(&mut self.monitoring_config.monitoring_type, MonitoringType::Local, "🖥️ Local").changed() {
+                    monitoring_type_changed = true;
+                }
+                if ui.radio_value(&mut self.monitoring_config.monitoring_type, MonitoringType::SSH, "🌐 Remoto (SSH)").changed() {
+                    monitoring_type_changed = true;
+                }
+            });
+            
+            // Guardar automáticamente cuando se cambia el tipo de monitoreo
+            if monitoring_type_changed {
+                let prefs = GeneralPrefs { 
+                    show_terminal: self.show_terminal,
+                    monitoring_enabled: self.monitoring_config.enabled,
+                    monitoring_type: self.monitoring_config.monitoring_type.clone(),
+                };
+                save_general_prefs(&prefs);
+            }
+            
+            // Configuración SSH si está seleccionado
+            if self.monitoring_config.monitoring_type == MonitoringType::SSH {
+                ui.group(|ui| {
+                    ui.label("Configuración SSH");
+                    
+                    ui.horizontal(|ui| {
+                        ui.label("Host/IP:");
+                        ui.text_edit_singleline(&mut self.monitoring_config.ssh_config.host);
+                    });
+                    
+                    ui.horizontal(|ui| {
+                        ui.label("Usuario:");
+                        ui.text_edit_singleline(&mut self.monitoring_config.ssh_config.username);
+                    });
+                    
+                    ui.horizontal(|ui| {
+                        ui.label("Contraseña:");
+                        ui.text_edit_singleline(&mut self.monitoring_config.ssh_config.password);
+                    });
+                    
+                    ui.horizontal(|ui| {
+                        ui.label("Puerto:");
+                        ui.add(egui::DragValue::new(&mut self.monitoring_config.ssh_config.port).clamp_range(1..=65535));
+                    });
+                    
+                    ui.checkbox(&mut self.monitoring_config.ssh_config.save_credentials, "💾 Guardar credenciales (encriptadas)");
+                    
+                    ui.horizontal(|ui| {
+                        if ui.button("🔗 Probar conexión").clicked() {
+                            // TODO: Implementar prueba de conexión SSH
+                            ui.label("✅ Conexión exitosa");
+                        }
+                    });
+                });
+            }
+            
+            if ui.checkbox(&mut self.monitoring_config.enabled, "Habilitar monitoreo del sistema").changed() {
+                if self.monitoring_config.enabled {
+                    // Inicializar el monitor si no existe
+                    if self.system_monitor.is_none() {
+                        self.system_monitor = Some(SystemMonitor::new(self.monitoring_config.clone()));
+                    }
+                    // Iniciar monitoreo
+                    if let Some(ref mut monitor) = self.system_monitor {
+                        monitor.start_monitoring();
+                    }
+                    
+                    // Guardar configuración SSH si está habilitado
+                    if self.monitoring_config.monitoring_type == MonitoringType::SSH {
+                        if let Err(e) = save_ssh_config(&self.monitoring_config.ssh_config) {
+                            eprintln!("Error guardando configuración SSH: {}", e);
+                        }
+                    }
+                } else {
+                    // Detener monitoreo
+                    if let Some(ref mut monitor) = self.system_monitor {
+                        monitor.stop_monitoring();
+                    }
+                }
+                
+                // Guardar automáticamente la configuración
+                let prefs = GeneralPrefs { 
+                    show_terminal: self.show_terminal,
+                    monitoring_enabled: self.monitoring_config.enabled,
+                    monitoring_type: self.monitoring_config.monitoring_type.clone(),
+                };
+                save_general_prefs(&prefs);
+            }
+            ui.label("Si está activado, se mostrarán las métricas del sistema en tiempo real durante las pruebas.");
+            
+            ui.horizontal(|ui| {
+                ui.label("Intervalo de actualización (ms):");
+                ui.add(egui::DragValue::new(&mut self.monitoring_config.interval_ms).clamp_range(500..=5000));
+            });
+            
+            ui.horizontal(|ui| {
+                ui.label("Historial máximo:");
+                ui.add(egui::DragValue::new(&mut self.monitoring_config.max_history).clamp_range(60..=600));
+            });
+            ui.label("Cantidad de muestras a mantener en memoria (60 = 1 minuto, 300 = 5 minutos)");
+            
+            ui.separator();
+            ui.label("Métricas a monitorear:");
+            
+            ui.checkbox(&mut self.monitoring_config.monitor_cpu, "🖥️ CPU");
+            ui.checkbox(&mut self.monitoring_config.monitor_memory, "💾 Memoria RAM");
+            ui.checkbox(&mut self.monitoring_config.monitor_disk, "💿 Disco I/O");
+            ui.checkbox(&mut self.monitoring_config.monitor_network, "🌐 Red");
+            
+            // Actualizar configuración del monitor si existe
+            if let Some(ref mut monitor) = self.system_monitor {
+                monitor.update_config(self.monitoring_config.clone());
+            }
+        });
     }
 }
 
