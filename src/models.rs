@@ -133,6 +133,16 @@ pub struct SavedConfig {
     pub name: String,
     pub base_url: String,
     pub requests: Vec<TestRequest>,
+    // Parámetros adicionales de configuración
+    pub iterations: u32,
+    pub concurrent_requests: u32,
+    pub wait_time: u64,
+    pub output_dir: String,
+    pub auto_generate_report: bool,
+    pub auto_upload_report: bool,
+    pub remote_folder_path: String,
+    pub created_at: chrono::DateTime<chrono::Local>,
+    pub description: Option<String>,
 }
 
 impl Default for TestRequest {
