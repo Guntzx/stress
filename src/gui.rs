@@ -794,9 +794,10 @@ impl TestStressApp {
     }
 
     fn close_terminal(&mut self) -> bool {
-        if let Some(mut child) = self.terminal_child.take() {
+        if let Some(_child) = self.terminal_child.take() {
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             {
+                let mut child = _child;
                 let _ = child.kill();
                 return true;
             }
@@ -924,7 +925,7 @@ impl TestStressApp {
                 ui.horizontal(|ui| {
                     ui.label("📂 Seleccionar configuración:");
                     let mut selected = None;
-                    egui::ComboBox::from_id_source("combo_single_config")
+                    egui::ComboBox::from_id_salt("combo_single_config")
                         .selected_text("Seleccionar configuración individual...")
                         .show_ui(ui, |ui| {
                             for config in self.configs_info.iter().filter(|c| !c.is_suite) {
@@ -1009,7 +1010,7 @@ impl TestStressApp {
                         ui.label("Configuración de la Petición");
                         ui.horizontal(|ui| {
                             ui.label("Método:");
-                            egui::ComboBox::from_id_source("method")
+                            egui::ComboBox::from_id_salt("method")
                                 .selected_text(format!("{}", self.current_request.method))
                                 .show_ui(ui, |ui| {
                                     ui.selectable_value(&mut self.current_request.method, HttpMethod::GET, "GET");
@@ -1266,7 +1267,7 @@ impl TestStressApp {
                 ui.horizontal(|ui| {
                     ui.label("📂 Seleccionar suite:");
                     let mut selected = None;
-                    egui::ComboBox::from_id_source("combo_suite_config")
+                    egui::ComboBox::from_id_salt("combo_suite_config")
                         .selected_text("Seleccionar configuración de suite...")
                         .show_ui(ui, |ui| {
                             for config in self.configs_info.iter().filter(|c| c.is_suite) {
@@ -1361,7 +1362,7 @@ impl TestStressApp {
                         });
                         ui.horizontal(|ui| {
                             ui.label("Método:");
-                            egui::ComboBox::from_id_source(format!("method_{}", i))
+                            egui::ComboBox::from_id_salt(format!("method_{}", i))
                                 .selected_text(format!("{}", request.method))
                                 .show_ui(ui, |ui| {
                                     ui.selectable_value(&mut request.method, HttpMethod::GET, "GET");
@@ -1800,7 +1801,7 @@ impl TestStressApp {
                     
                     ui.horizontal(|ui| {
                         ui.label("Puerto:");
-                        ui.add(egui::DragValue::new(&mut self.monitoring_config.ssh_config.port).clamp_range(1..=65535));
+                        ui.add(egui::DragValue::new(&mut self.monitoring_config.ssh_config.port).range(1..=65535));
                     });
                     
                     ui.horizontal(|ui| {
@@ -1848,12 +1849,12 @@ impl TestStressApp {
             
             ui.horizontal(|ui| {
                 ui.label("Intervalo de actualización (ms):");
-                ui.add(egui::DragValue::new(&mut self.monitoring_config.interval_ms).clamp_range(500..=5000));
+                ui.add(egui::DragValue::new(&mut self.monitoring_config.interval_ms).range(500..=5000));
             });
             
             ui.horizontal(|ui| {
                 ui.label("Historial máximo:");
-                ui.add(egui::DragValue::new(&mut self.monitoring_config.max_history).clamp_range(60..=600));
+                ui.add(egui::DragValue::new(&mut self.monitoring_config.max_history).range(60..=600));
             });
             ui.label("Cantidad de muestras a mantener en memoria (60 = 1 minuto, 300 = 5 minutos)");
             

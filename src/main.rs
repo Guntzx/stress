@@ -16,7 +16,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eframe::run_native(
         "Test Stress - Pruebas de Carga",
         options,
-        Box::new(|cc| Box::new(gui::TestStressApp::new(cc))),
+        Box::new(|cc| Ok(Box::new(gui::TestStressApp::new(cc)))),
     )?;
 
     Ok(())
