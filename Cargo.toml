@@ -5,8 +5,8 @@ edition = "2021"
 
 [dependencies]
 # Interfaz gráfica
-eframe = "0.26.0"
-egui = "0.26.0"
+eframe = "0.29.0"
+egui = "0.29.0"
 rfd = "0.13"
 dirs = "5.0"
 open = "5.3"
@@ -39,9 +39,3 @@ umya-spreadsheet = "2.3.1"
 # System monitoring
 sysinfo = "0.30"
 
-# SSH connections
-ssh2 = "0.9"
-
-# Encryption for SSH credentials
-aes-gcm = "0.10"
-base64 = "0.21"

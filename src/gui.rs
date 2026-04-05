@@ -2,7 +2,7 @@ use crate::config::{get_output_directory, save_config, load_config, list_saved_c
 use crate::load_test::LoadTester;
 use crate::models::{TestRequest, TestSuite, SavedConfig, TestSummary, HttpMethod, HttpHeader, QueryParameter};
 use crate::report_generator::generate_excel_report_from_files;
-use crate::monitor::{SystemMonitor, MonitoringConfig, MonitoringType, format_bytes, format_percentage, save_ssh_config, load_ssh_config};
+use crate::monitor::{SystemMonitor, MonitoringConfig, format_bytes, format_percentage};
 use eframe::egui;
 use std::fs;
 use std::path::PathBuf;
@@ -15,7 +15,6 @@ use serde::{Serialize, Deserialize};
 struct GeneralPrefs {
     show_terminal: bool,
     monitoring_enabled: bool,
-    monitoring_type: MonitoringType,
 }
 
 fn get_prefs_path() -> PathBuf {
@@ -162,7 +161,6 @@ impl TestStressApp {
             monitoring_config: {
                 let mut config = MonitoringConfig::default();
                 config.enabled = prefs.monitoring_enabled;
-                config.monitoring_type = prefs.monitoring_type;
                 config
             },
         };
@@ -172,11 +170,6 @@ impl TestStressApp {
         }
         // Cargar automáticamente todas las configuraciones disponibles
         app.refresh_configs();
-        
-        // Cargar configuración SSH guardada
-        if let Ok(Some(ssh_config)) = load_ssh_config() {
-            app.monitoring_config.ssh_config = ssh_config;
-        }
         
         // Inicializar monitoreo si está habilitado
         if app.monitoring_config.enabled {
@@ -794,9 +787,10 @@ impl TestStressApp {
     }
 
     fn close_terminal(&mut self) -> bool {
-        if let Some(mut child) = self.terminal_child.take() {
+        if let Some(_child) = self.terminal_child.take() {
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             {
+                let mut child = _child;
                 let _ = child.kill();
                 return true;
             }
@@ -924,7 +918,7 @@ impl TestStressApp {
                 ui.horizontal(|ui| {
                     ui.label("📂 Seleccionar configuración:");
                     let mut selected = None;
-                    egui::ComboBox::from_id_source("combo_single_config")
+                    egui::ComboBox::from_id_salt("combo_single_config")
                         .selected_text("Seleccionar configuración individual...")
                         .show_ui(ui, |ui| {
                             for config in self.configs_info.iter().filter(|c| !c.is_suite) {
@@ -1009,7 +1003,7 @@ impl TestStressApp {
                         ui.label("Configuración de la Petición");
                         ui.horizontal(|ui| {
                             ui.label("Método:");
-                            egui::ComboBox::from_id_source("method")
+                            egui::ComboBox::from_id_salt("method")
                                 .selected_text(format!("{}", self.current_request.method))
                                 .show_ui(ui, |ui| {
                                     ui.selectable_value(&mut self.current_request.method, HttpMethod::GET, "GET");
@@ -1092,16 +1086,7 @@ impl TestStressApp {
                 // Panel de métricas del sistema en tiempo real (derecha)
                 if self.monitoring_config.enabled {
                     ui.vertical(|ui| {
-                        let mut titulo_metricas = "📊 Métricas del Sistema".to_string();
-                        if self.monitoring_config.monitoring_type == MonitoringType::SSH {
-                            let host = &self.monitoring_config.ssh_config.host;
-                            if !host.trim().is_empty() {
-                                titulo_metricas = format!("📊 Métricas del Sistema - {}", host);
-                            } else {
-                                titulo_metricas = "📊 Métricas del Sistema - SSH".to_string();
-                            }
-                        }
-                        ui.heading(titulo_metricas);
+                        ui.heading("📊 Métricas del Sistema");
                         
                         ui.group(|ui| {
                             if let Some(ref mut monitor) = self.system_monitor {
@@ -1152,14 +1137,6 @@ impl TestStressApp {
                                     });
                                     
                                     ui.label(format!("🕐 Última actualización: {}", metrics.timestamp.format("%H:%M:%S")));
-                                    
-                                    // Mostrar tipo de monitoreo
-                                    let monitor_type = if self.monitoring_config.monitoring_type == MonitoringType::Local {
-                                        "🖥️ Monitoreo Local"
-                                    } else {
-                                        "🌐 Monitoreo SSH"
-                                    };
-                                    ui.label(monitor_type);
                                 } else {
                                     ui.label("⏳ Inicializando métricas...");
                                 }
@@ -1170,7 +1147,7 @@ impl TestStressApp {
                     });
                 }
             });
-            
+
             // Controles de ejecución (dentro del scroll)
             ui.horizontal(|ui| {
                 if ui.button(if self.is_running { "⏸️ Pausar" } else { "▶️ Ejecutar" }).clicked() {
@@ -1266,7 +1243,7 @@ impl TestStressApp {
                 ui.horizontal(|ui| {
                     ui.label("📂 Seleccionar suite:");
                     let mut selected = None;
-                    egui::ComboBox::from_id_source("combo_suite_config")
+                    egui::ComboBox::from_id_salt("combo_suite_config")
                         .selected_text("Seleccionar configuración de suite...")
                         .show_ui(ui, |ui| {
                             for config in self.configs_info.iter().filter(|c| c.is_suite) {
@@ -1361,7 +1338,7 @@ impl TestStressApp {
                         });
                         ui.horizontal(|ui| {
                             ui.label("Método:");
-                            egui::ComboBox::from_id_source(format!("method_{}", i))
+                            egui::ComboBox::from_id_salt(format!("method_{}", i))
                                 .selected_text(format!("{}", request.method))
                                 .show_ui(ui, |ui| {
                                     ui.selectable_value(&mut request.method, HttpMethod::GET, "GET");
@@ -1447,16 +1424,7 @@ impl TestStressApp {
             
             // Panel de métricas del sistema en tiempo real
             if self.monitoring_config.enabled {
-                let mut titulo_metricas = "📊 Métricas del Sistema".to_string();
-                if self.monitoring_config.monitoring_type == MonitoringType::SSH {
-                    let host = &self.monitoring_config.ssh_config.host;
-                    if !host.trim().is_empty() {
-                        titulo_metricas = format!("📊 Métricas del Sistema - {}", host);
-                    } else {
-                        titulo_metricas = "📊 Métricas del Sistema - SSH".to_string();
-                    }
-                }
-                ui.heading(titulo_metricas);
+                ui.heading("📊 Métricas del Sistema");
                 
                 ui.group(|ui| {
                     if let Some(ref mut monitor) = self.system_monitor {
@@ -1507,14 +1475,6 @@ impl TestStressApp {
                             });
                             
                             ui.label(format!("🕐 Última actualización: {}", metrics.timestamp.format("%H:%M:%S")));
-                            
-                            // Mostrar tipo de monitoreo
-                            let monitor_type = if self.monitoring_config.monitoring_type == MonitoringType::Local {
-                                "🖥️ Monitoreo Local"
-                            } else {
-                                "🌐 Monitoreo SSH"
-                            };
-                            ui.label(monitor_type);
                         } else {
                             ui.label("⏳ Inicializando métricas...");
                         }
@@ -1709,10 +1669,9 @@ impl TestStressApp {
             }
             ui.label("Por defecto, la terminal está oculta. Si activas esta opción, se abrirá una terminal con logs en tiempo real. Si la desactivas, se cerrará la terminal si es posible.");
             if changed {
-                let prefs = GeneralPrefs { 
+                let prefs = GeneralPrefs {
                     show_terminal: self.show_terminal,
                     monitoring_enabled: self.monitoring_config.enabled,
-                    monitoring_type: self.monitoring_config.monitoring_type.clone(),
                 };
                 save_general_prefs(&prefs);
                 if self.show_terminal {
@@ -1755,92 +1714,24 @@ impl TestStressApp {
             
             ui.separator();
             ui.heading("Monitoreo del Sistema");
-            
-            // Tipo de monitoreo
-            let mut monitoring_type_changed = false;
-            ui.horizontal(|ui| {
-                ui.label("Tipo de monitoreo:");
-                if ui.radio_value(&mut self.monitoring_config.monitoring_type, MonitoringType::Local, "🖥️ Local").changed() {
-                    monitoring_type_changed = true;
-                }
-                if ui.radio_value(&mut self.monitoring_config.monitoring_type, MonitoringType::SSH, "🌐 Remoto (SSH)").changed() {
-                    monitoring_type_changed = true;
-                }
-            });
-            
-            // Guardar automáticamente cuando se cambia el tipo de monitoreo
-            if monitoring_type_changed {
-                let prefs = GeneralPrefs { 
-                    show_terminal: self.show_terminal,
-                    monitoring_enabled: self.monitoring_config.enabled,
-                    monitoring_type: self.monitoring_config.monitoring_type.clone(),
-                };
-                save_general_prefs(&prefs);
-            }
-            
-            // Configuración SSH si está seleccionado
-            if self.monitoring_config.monitoring_type == MonitoringType::SSH {
-                ui.group(|ui| {
-                    ui.label("Configuración SSH");
-                    
-                    ui.horizontal(|ui| {
-                        ui.label("Host/IP:");
-                        ui.text_edit_singleline(&mut self.monitoring_config.ssh_config.host);
-                    });
-                    
-                    ui.horizontal(|ui| {
-                        ui.label("Usuario:");
-                        ui.text_edit_singleline(&mut self.monitoring_config.ssh_config.username);
-                    });
-                    
-                    ui.horizontal(|ui| {
-                        ui.label("Contraseña:");
-                        ui.text_edit_singleline(&mut self.monitoring_config.ssh_config.password);
-                    });
-                    
-                    ui.horizontal(|ui| {
-                        ui.label("Puerto:");
-                        ui.add(egui::DragValue::new(&mut self.monitoring_config.ssh_config.port).clamp_range(1..=65535));
-                    });
-                    
-                    ui.horizontal(|ui| {
-                        if ui.button("🔗 Probar conexión").clicked() {
-                            // TODO: Implementar prueba de conexión SSH
-                            ui.label("✅ Conexión exitosa");
-                        }
-                    });
-                });
-            }
-            
+
             if ui.checkbox(&mut self.monitoring_config.enabled, "Habilitar monitoreo del sistema").changed() {
                 if self.monitoring_config.enabled {
-                    // Inicializar el monitor si no existe
                     if self.system_monitor.is_none() {
                         self.system_monitor = Some(SystemMonitor::new(self.monitoring_config.clone()));
                     }
-                    // Iniciar monitoreo
                     if let Some(ref mut monitor) = self.system_monitor {
                         monitor.start_monitoring();
                     }
-                    
-                    // Guardar configuración SSH si está habilitado
-                    if self.monitoring_config.monitoring_type == MonitoringType::SSH {
-                        if let Err(e) = save_ssh_config(&self.monitoring_config.ssh_config) {
-                            eprintln!("Error guardando configuración SSH: {}", e);
-                        }
-                    }
                 } else {
-                    // Detener monitoreo
                     if let Some(ref mut monitor) = self.system_monitor {
                         monitor.stop_monitoring();
                     }
                 }
-                
-                // Guardar automáticamente la configuración
-                let prefs = GeneralPrefs { 
+
+                let prefs = GeneralPrefs {
                     show_terminal: self.show_terminal,
                     monitoring_enabled: self.monitoring_config.enabled,
-                    monitoring_type: self.monitoring_config.monitoring_type.clone(),
                 };
                 save_general_prefs(&prefs);
             }
@@ -1848,12 +1739,12 @@ impl TestStressApp {
             
             ui.horizontal(|ui| {
                 ui.label("Intervalo de actualización (ms):");
-                ui.add(egui::DragValue::new(&mut self.monitoring_config.interval_ms).clamp_range(500..=5000));
+                ui.add(egui::DragValue::new(&mut self.monitoring_config.interval_ms).range(500..=5000));
             });
             
             ui.horizontal(|ui| {
                 ui.label("Historial máximo:");
-                ui.add(egui::DragValue::new(&mut self.monitoring_config.max_history).clamp_range(60..=600));
+                ui.add(egui::DragValue::new(&mut self.monitoring_config.max_history).range(60..=600));
             });
             ui.label("Cantidad de muestras a mantener en memoria (60 = 1 minuto, 300 = 5 minutos)");
             
