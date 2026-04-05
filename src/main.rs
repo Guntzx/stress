@@ -226,14 +226,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => {
             // Por defecto, abrir interfaz gráfica si no se especifica comando
             if cli.gui || std::env::args().len() == 1 {
-                // Ejecutar interfaz gráfica
-                let options = NativeOptions::default();
-                
-                eframe::run_native(
-                    "Test Stress - Pruebas de Carga",
-                    options,
-                    Box::new(|cc| Box::new(gui::TestStressApp::new(cc))),
-                )?;
+            // Ejecutar interfaz gráfica
+            let options = NativeOptions {
+                centered: true,
+                run_and_return: false,
+                ..Default::default()
+            };
+            
+            eframe::run_native(
+                "Test Stress - Pruebas de Carga",
+                options,
+                Box::new(|cc| Ok(Box::new(gui::TestStressApp::new(cc)))),
+            )?;
             } else {
                 // Mostrar ayuda solo si se especifica explícitamente
                 println!("Test Stress - Aplicación de Pruebas de Carga");
