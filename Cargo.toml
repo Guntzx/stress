@@ -39,9 +39,3 @@ umya-spreadsheet = "2.3.1"
 # System monitoring
 sysinfo = "0.30"
 
-# SSH connections
-ssh2 = "0.9"
-
-# Encryption for SSH credentials
-aes-gcm = "0.10"
-base64 = "0.21"
