@@ -1,14 +1,14 @@
-use crate::config::{ensure_output_directory, get_output_directory, save_config, load_config, list_saved_configs, delete_config, list_configs_with_info, search_configs, ConfigInfo};
+use crate::config::{get_output_directory, save_config, load_config, list_saved_configs, delete_config, list_configs_with_info, ConfigInfo};
 use crate::load_test::LoadTester;
 use crate::models::{TestRequest, TestSuite, SavedConfig, TestSummary, HttpMethod, HttpHeader, QueryParameter};
 use crate::report_generator::generate_excel_report_from_files;
-use crate::monitor::{SystemMonitor, SystemMetrics, MonitoringConfig, MonitoringType, SSHConfig, format_bytes, format_percentage, save_ssh_config, load_ssh_config};
+use crate::monitor::{SystemMonitor, MonitoringConfig, MonitoringType, format_bytes, format_percentage, save_ssh_config, load_ssh_config};
 use eframe::egui;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 use dirs;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize, Default)]
@@ -61,20 +61,15 @@ pub struct TestStressApp {
     
     // Estado de la aplicación
     is_running: bool,
-    current_test: String,
     progress: f32,
     logs: Arc<Mutex<Vec<String>>>,
     results: Arc<Mutex<Vec<TestSummary>>>,
-    
+
     // Configuraciones guardadas
     saved_configs: Vec<String>,
-    selected_config: String,
-    
-    // Nuevos campos para gestión avanzada de configuraciones
+
+    // Gestión avanzada de configuraciones
     configs_info: Vec<ConfigInfo>,
-    config_search_query: String,
-    config_current_page: usize,
-    configs_per_page: usize,
     
     // Pestañas
     current_tab: usize,
@@ -140,12 +135,10 @@ impl TestStressApp {
             suite_name: "Nueva suite de pruebas".to_string(),
             suite_requests: Vec::new(),
             is_running: false,
-            current_test: String::new(),
             progress: 0.0,
             logs: Arc::new(Mutex::new(Vec::new())),
             results: Arc::new(Mutex::new(Vec::new())),
             saved_configs,
-            selected_config: String::new(),
             current_tab: 0,
             cancel_requested: false,
             cancel_flag: None,
@@ -158,13 +151,10 @@ impl TestStressApp {
             limit_warning_accept: false,
             pending_action: None,
             report_success_message: None,
-            auto_generate_report: true, // Por defecto activado
-            auto_upload_report: false, // Por defecto desactivado
-            remote_folder_path: String::new(), // Por defecto vacío
+            auto_generate_report: true,
+            auto_upload_report: false,
+            remote_folder_path: String::new(),
             configs_info: Vec::new(),
-            config_search_query: String::new(),
-            config_current_page: 0,
-            configs_per_page: 10,
             config_saved_message: None,
             pending_load_config: None,
             pending_delete_config: None,
@@ -209,12 +199,6 @@ impl TestStressApp {
             if logs.len() > 100 {
                 logs.remove(0);
             }
-        }
-    }
-    
-    fn add_result(&self, summary: TestSummary) {
-        if let Ok(mut results) = self.results.lock() {
-            results.push(summary);
         }
     }
     
@@ -810,9 +794,10 @@ impl TestStressApp {
     }
 
     fn close_terminal(&mut self) -> bool {
-        if let Some(mut child) = self.terminal_child.take() {
+        if let Some(_child) = self.terminal_child.take() {
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             {
+                let mut child = _child;
                 let _ = child.kill();
                 return true;
             }
@@ -940,7 +925,7 @@ impl TestStressApp {
                 ui.horizontal(|ui| {
                     ui.label("📂 Seleccionar configuración:");
                     let mut selected = None;
-                    egui::ComboBox::from_id_source("combo_single_config")
+                    egui::ComboBox::from_id_salt("combo_single_config")
                         .selected_text("Seleccionar configuración individual...")
                         .show_ui(ui, |ui| {
                             for config in self.configs_info.iter().filter(|c| !c.is_suite) {
@@ -1025,7 +1010,7 @@ impl TestStressApp {
                         ui.label("Configuración de la Petición");
                         ui.horizontal(|ui| {
                             ui.label("Método:");
-                            egui::ComboBox::from_id_source("method")
+                            egui::ComboBox::from_id_salt("method")
                                 .selected_text(format!("{}", self.current_request.method))
                                 .show_ui(ui, |ui| {
                                     ui.selectable_value(&mut self.current_request.method, HttpMethod::GET, "GET");
@@ -1282,7 +1267,7 @@ impl TestStressApp {
                 ui.horizontal(|ui| {
                     ui.label("📂 Seleccionar suite:");
                     let mut selected = None;
-                    egui::ComboBox::from_id_source("combo_suite_config")
+                    egui::ComboBox::from_id_salt("combo_suite_config")
                         .selected_text("Seleccionar configuración de suite...")
                         .show_ui(ui, |ui| {
                             for config in self.configs_info.iter().filter(|c| c.is_suite) {
@@ -1377,7 +1362,7 @@ impl TestStressApp {
                         });
                         ui.horizontal(|ui| {
                             ui.label("Método:");
-                            egui::ComboBox::from_id_source(format!("method_{}", i))
+                            egui::ComboBox::from_id_salt(format!("method_{}", i))
                                 .selected_text(format!("{}", request.method))
                                 .show_ui(ui, |ui| {
                                     ui.selectable_value(&mut request.method, HttpMethod::GET, "GET");
@@ -1568,20 +1553,6 @@ impl TestStressApp {
         }
     }
     
-    fn load_config_by_name(&mut self, name: &str) {
-        if let Err(e) = self.load_config(name) {
-            eprintln!("Error cargando configuración: {}", e);
-        }
-    }
-    
-    fn delete_config_by_name(&mut self, name: &str) {
-        if let Err(e) = delete_config(name) {
-            eprintln!("Error eliminando configuración: {}", e);
-        } else {
-            self.refresh_configs();
-        }
-    }
-
     fn render_configs_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Configuraciones Guardadas");
         
@@ -1830,7 +1801,7 @@ impl TestStressApp {
                     
                     ui.horizontal(|ui| {
                         ui.label("Puerto:");
-                        ui.add(egui::DragValue::new(&mut self.monitoring_config.ssh_config.port).clamp_range(1..=65535));
+                        ui.add(egui::DragValue::new(&mut self.monitoring_config.ssh_config.port).range(1..=65535));
                     });
                     
                     ui.horizontal(|ui| {
@@ -1878,12 +1849,12 @@ impl TestStressApp {
             
             ui.horizontal(|ui| {
                 ui.label("Intervalo de actualización (ms):");
-                ui.add(egui::DragValue::new(&mut self.monitoring_config.interval_ms).clamp_range(500..=5000));
+                ui.add(egui::DragValue::new(&mut self.monitoring_config.interval_ms).range(500..=5000));
             });
             
             ui.horizontal(|ui| {
                 ui.label("Historial máximo:");
-                ui.add(egui::DragValue::new(&mut self.monitoring_config.max_history).clamp_range(60..=600));
+                ui.add(egui::DragValue::new(&mut self.monitoring_config.max_history).range(60..=600));
             });
             ui.label("Cantidad de muestras a mantener en memoria (60 = 1 minuto, 300 = 5 minutos)");
             
@@ -1906,8 +1877,7 @@ impl TestStressApp {
 // Función auxiliar para buscar archivos CSV en un directorio
 fn find_csv_file_in_directory(dir_path: &str, test_name: &str) -> Option<PathBuf> {
     use std::fs;
-    use std::path::Path;
-    
+
     if let Ok(entries) = fs::read_dir(dir_path) {
         for entry in entries {
             if let Ok(entry) = entry {
