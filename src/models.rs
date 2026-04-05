@@ -1,14 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TestConfig {
-    pub base_url: String,
-    pub iterations: u32,
-    pub concurrent_requests: u32,
-    pub wait_time: u64,
-    pub output_dir: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum HttpMethod {
     GET,

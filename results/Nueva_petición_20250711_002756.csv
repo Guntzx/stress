@@ -1,3 +1,0 @@
-test_type,request_name,iteration,start_time,end_time,duration_ms,success,status_code,response,error
-Single,Nueva petición,1,2025-07-11T00:27:49.310410700Z,2025-07-11T00:27:51.675316Z,2364,false,,,error sending request for url (http://localhost:8080/): error trying to connect: tcp connect error: No se puede establecer una conexión ya que el equipo de destino denegó expresamente dicha conexión. (os error 10061)
-Single,Nueva petición,2,2025-07-11T00:27:52.686962600Z,2025-07-11T00:27:55.043504Z,2356,false,,,error sending request for url (http://localhost:8080/): error trying to connect: tcp connect error: No se puede establecer una conexión ya que el equipo de destino denegó expresamente dicha conexión. (os error 10061)
