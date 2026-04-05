@@ -7,7 +7,6 @@ use serde::{Serialize, Deserialize};
 use std::collections::VecDeque;
 use ssh2::Session;
 use std::net::TcpStream;
-use std::io::{BufRead, BufReader};
 use std::io::Read;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,24 +67,17 @@ impl Default for MonitoringConfig {
 }
 
 pub struct SystemMonitor {
-    system: System,
     config: MonitoringConfig,
     metrics_history: Arc<Mutex<VecDeque<SystemMetrics>>>,
     is_monitoring: Arc<Mutex<bool>>,
-    last_metrics: Option<SystemMetrics>,
 }
 
 impl SystemMonitor {
     pub fn new(config: MonitoringConfig) -> Self {
-        let mut system = System::new_all();
-        system.refresh_all();
-        
         Self {
-            system,
             config,
             metrics_history: Arc::new(Mutex::new(VecDeque::new())),
             is_monitoring: Arc::new(Mutex::new(false)),
-            last_metrics: None,
         }
     }
     
@@ -100,11 +92,7 @@ impl SystemMonitor {
         
         std::thread::spawn(move || {
             let mut system = System::new_all();
-            let mut last_disk_read = 0u64;
-            let mut last_disk_write = 0u64;
-            let mut last_network_rx = 0u64;
-            let mut last_network_tx = 0u64;
-            
+
             // Conexión SSH si es necesario
             let mut ssh_session: Option<Session> = None;
             if config.monitoring_type == MonitoringType::SSH {
@@ -112,19 +100,19 @@ impl SystemMonitor {
                     ssh_session = Some(session);
                 }
             }
-            
+
             while *is_monitoring.lock().unwrap() {
                 let timestamp = Local::now();
-                
+
                 let metrics = if config.monitoring_type == MonitoringType::Local {
-                    Self::get_local_metrics(&mut system, &config, &mut last_disk_read, &mut last_disk_write, &mut last_network_rx, &mut last_network_tx, timestamp)
+                    Self::get_local_metrics(&mut system, &config, timestamp)
                 } else {
                     // Monitoreo SSH
                     if let Some(ref session) = ssh_session {
                         Self::get_ssh_metrics(session, &config, timestamp)
                     } else {
                         // Fallback a métricas locales si SSH falla
-                        Self::get_local_metrics(&mut system, &config, &mut last_disk_read, &mut last_disk_write, &mut last_network_rx, &mut last_network_tx, timestamp)
+                        Self::get_local_metrics(&mut system, &config, timestamp)
                     }
                 };
                 
@@ -153,22 +141,16 @@ impl SystemMonitor {
     fn get_local_metrics(
         system: &mut System,
         config: &MonitoringConfig,
-        last_disk_read: &mut u64,
-        last_disk_write: &mut u64,
-        last_network_rx: &mut u64,
-        last_network_tx: &mut u64,
         timestamp: DateTime<Local>
     ) -> SystemMetrics {
         system.refresh_all();
-        
-        // CPU
+
         let cpu_usage = if config.monitor_cpu {
             system.global_cpu_info().cpu_usage()
         } else {
             0.0
         };
-        
-        // Memory
+
         let (memory_usage, memory_used, memory_total) = if config.monitor_memory {
             let total = system.total_memory();
             let used = system.used_memory();
@@ -177,40 +159,20 @@ impl SystemMonitor {
         } else {
             (0.0, 0, 0)
         };
-        
-        // Disk I/O - simplificado
-        let (disk_read, disk_write): (u64, u64) = if config.monitor_disk {
-            (0, 0) // TODO: Implementar cuando esté disponible
-        } else {
-            (0, 0)
-        };
-        
-        // Network I/O - simplificado
-        let (network_rx, network_tx): (u64, u64) = if config.monitor_network {
-            (0, 0) // TODO: Implementar cuando esté disponible
-        } else {
-            (0, 0)
-        };
-        
-        // Load average - simplificado
-        let load_average = 0.0; // TODO: Implementar cuando esté disponible
-        
-        // Temperature (no disponible en todos los sistemas)
-        let temperature = None; // TODO: Implementar si es posible
-        
+
         SystemMetrics {
             timestamp,
             cpu_usage,
             memory_usage,
             memory_used,
             memory_total,
-            disk_read_bytes: disk_read.saturating_sub(*last_disk_read),
-            disk_write_bytes: disk_write.saturating_sub(*last_disk_write),
-            network_rx_bytes: network_rx.saturating_sub(*last_network_rx),
-            network_tx_bytes: network_tx.saturating_sub(*last_network_tx),
-            active_connections: 0, // TODO: Implementar conteo de conexiones
-            load_average,
-            temperature,
+            disk_read_bytes: 0,
+            disk_write_bytes: 0,
+            network_rx_bytes: 0,
+            network_tx_bytes: 0,
+            active_connections: 0,
+            load_average: 0.0,
+            temperature: None,
         }
     }
     
@@ -289,26 +251,6 @@ impl SystemMonitor {
         } else {
             None
         }
-    }
-    
-    pub fn get_metrics_history(&self) -> Vec<SystemMetrics> {
-        if let Ok(history) = self.metrics_history.lock() {
-            history.iter().cloned().collect()
-        } else {
-            Vec::new()
-        }
-    }
-    
-    pub fn is_monitoring(&self) -> bool {
-        if let Ok(is_monitoring) = self.is_monitoring.lock() {
-            *is_monitoring
-        } else {
-            false
-        }
-    }
-    
-    pub fn get_config(&self) -> &MonitoringConfig {
-        &self.config
     }
     
     pub fn update_config(&mut self, config: MonitoringConfig) {
@@ -414,8 +356,7 @@ pub fn decrypt_password(encrypted_password: &str) -> Result<String, Box<dyn std:
 // Funciones para guardar/cargar configuración SSH
 pub fn save_ssh_config(config: &SSHConfig) -> Result<(), Box<dyn std::error::Error>> {
     use std::fs;
-    use std::path::PathBuf;
-    
+
     if !config.save_credentials {
         return Ok(());
     }
@@ -441,8 +382,7 @@ pub fn save_ssh_config(config: &SSHConfig) -> Result<(), Box<dyn std::error::Err
 
 pub fn load_ssh_config() -> Result<Option<SSHConfig>, Box<dyn std::error::Error>> {
     use std::fs;
-    use std::path::PathBuf;
-    
+
     let config_file = get_ssh_config_dir()?.join("ssh_config.json");
     
     if !config_file.exists() {
