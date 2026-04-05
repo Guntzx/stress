@@ -223,9 +223,13 @@ impl LoadTester {
             HttpMethod::OPTIONS => self.client.request(reqwest::Method::OPTIONS, &url),
         };
 
-        // Agregar headers
+        // Agregar headers (solo los válidos)
         for header in &request.headers {
-            req_builder = req_builder.header(&header.name, &header.value);
+            let name = header.name.trim();
+            let value = header.value.trim();
+            if !name.is_empty() && !value.is_empty() {
+                req_builder = req_builder.header(name, value);
+            }
         }
 
         // Agregar body si existe y el método lo soporta
