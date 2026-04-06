@@ -42,6 +42,54 @@ curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/install.sh | bas
 
 ---
 
+## Actualización
+
+### macOS / Linux
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/update.sh | bash
+```
+
+### Windows — PowerShell
+
+```powershell
+irm https://raw.githubusercontent.com/Guntzx/stress/main/update.ps1 | iex
+```
+
+### Windows — Git Bash / WSL
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/update.sh | bash
+```
+
+> El actualizador descarga los últimos cambios, recompila y reemplaza el binario instalado.
+
+---
+
+## Desinstalación
+
+### macOS / Linux
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/uninstall.sh | bash
+```
+
+### Windows — PowerShell
+
+```powershell
+irm https://raw.githubusercontent.com/Guntzx/stress/main/uninstall.ps1 | iex
+```
+
+### Windows — Git Bash / WSL
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/uninstall.sh | bash
+```
+
+> El desinstalador elimina el binario y limpia la entrada del PATH.
+
+---
+
 ## Compilar manualmente (desarrolladores)
 
 **Requisitos:** [Rust 1.70+](https://rustup.rs/) y Git.
