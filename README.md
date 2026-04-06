@@ -44,49 +44,23 @@ curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/install.sh | bas
 
 ## Actualización
 
-### macOS / Linux
+Una vez instalado, actualiza directamente desde la terminal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/update.sh | bash
+stress update
 ```
 
-### Windows — PowerShell
-
-```powershell
-irm https://raw.githubusercontent.com/Guntzx/stress/main/update.ps1 | iex
-```
-
-### Windows — Git Bash / WSL
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/update.sh | bash
-```
-
-> El actualizador descarga los últimos cambios, recompila y reemplaza el binario instalado.
+Descarga el binario más reciente desde GitHub Releases y lo reemplaza automáticamente.
 
 ---
 
 ## Desinstalación
 
-### macOS / Linux
-
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/uninstall.sh | bash
+stress uninstall
 ```
 
-### Windows — PowerShell
-
-```powershell
-irm https://raw.githubusercontent.com/Guntzx/stress/main/uninstall.ps1 | iex
-```
-
-### Windows — Git Bash / WSL
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/uninstall.sh | bash
-```
-
-> El desinstalador elimina el binario y limpia la entrada del PATH.
+Elimina el binario del sistema y limpia la entrada del PATH.
 
 ---
 
@@ -111,7 +85,12 @@ Ejecutables generados:
 
 ## Uso
 
-Ejecuta `stress` (o doble clic en el ejecutable) para abrir la interfaz gráfica.
+| Comando             | Descripción                              |
+|---------------------|------------------------------------------|
+| `stress`            | Abre la interfaz gráfica                 |
+| `stress update`     | Actualiza al último release              |
+| `stress uninstall`  | Desinstala stress del sistema            |
+| `stress help`       | Muestra los comandos disponibles         |
 
 ---
 

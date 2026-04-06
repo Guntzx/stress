@@ -114,6 +114,14 @@ pub struct TestStressApp {
     // Verificación de actualizaciones
     update_available: Option<String>,
     update_receiver: Option<mpsc::Receiver<String>>,
+
+    // Actualización en segundo plano desde la GUI
+    updating: bool,
+    update_result_receiver: Option<mpsc::Receiver<Result<String, String>>>,
+
+    // Desinstalación desde la GUI
+    show_uninstall_confirm: bool,
+    uninstall_result: Option<Result<(), String>>,
 }
 
 // Acción pendiente tras advertencia
@@ -210,6 +218,10 @@ impl TestStressApp {
                 }
                 Some(rx)
             },
+            updating: false,
+            update_result_receiver: None,
+            show_uninstall_confirm: false,
+            uninstall_result: None,
         };
         // Solo abrir terminal si la preferencia está activa y no hay terminal abierta
         if app.show_terminal {
@@ -901,6 +913,18 @@ impl eframe::App for TestStressApp {
             }
         }
 
+        // Recibir resultado de actualización en segundo plano
+        if let Some(ref rx) = self.update_result_receiver {
+            if let Ok(result) = rx.try_recv() {
+                self.updating = false;
+                self.update_result_receiver = None;
+                match result {
+                    Ok(_) => { self.update_available = None; }
+                    Err(e) => { self.update_available = Some(format!("Error: {}", e)); }
+                }
+            }
+        }
+
         // Banner de actualización disponible
         if let Some(ref version) = self.update_available.clone() {
             egui::TopBottomPanel::top("update_banner").show(ctx, |ui| {
@@ -909,14 +933,28 @@ impl eframe::App for TestStressApp {
                         egui::Color32::from_rgb(255, 193, 7),
                         format!("Nueva version disponible: v{}.", version),
                     );
-                    ui.label("Ejecuta");
-                    ui.code("update.sh");
-                    ui.label("(macOS/Linux) o");
-                    ui.code("update.ps1");
-                    ui.label("(Windows) para actualizar.");
+                    if self.updating {
+                        ui.spinner();
+                        ui.label("Actualizando...");
+                    } else if ui.button("Actualizar ahora").clicked() {
+                        self.updating = true;
+                        let (tx, rx) = mpsc::channel();
+                        self.update_result_receiver = Some(rx);
+                        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                            handle.spawn(async move {
+                                let result = crate::cli::update()
+                                    .await
+                                    .map(|_| String::new())
+                                    .map_err(|e| e.to_string());
+                                let _ = tx.send(result);
+                            });
+                        }
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("✕").clicked() {
-                            self.update_available = None;
+                        if !self.updating {
+                            if ui.small_button("✕").clicked() {
+                                self.update_available = None;
+                            }
                         }
                     });
                 });
@@ -1836,6 +1874,40 @@ impl TestStressApp {
             // Actualizar configuración del monitor si existe
             if let Some(ref mut monitor) = self.system_monitor {
                 monitor.update_config(self.monitoring_config.clone());
+            }
+
+            ui.separator();
+            ui.heading("Desinstalar");
+            ui.label("Elimina el binario de stress del sistema y limpia el PATH.");
+            ui.add_space(4.0);
+
+            if let Some(ref result) = self.uninstall_result.clone() {
+                match result {
+                    Ok(_) => {
+                        ui.colored_label(egui::Color32::GREEN, "Desinstalación completada. Puedes cerrar la aplicación.");
+                    }
+                    Err(e) => {
+                        ui.colored_label(egui::Color32::RED, format!("Error: {}", e));
+                    }
+                }
+            } else if self.show_uninstall_confirm {
+                ui.colored_label(egui::Color32::from_rgb(255, 193, 7), "¿Estás seguro de que deseas desinstalar stress?");
+                ui.horizontal(|ui| {
+                    if ui.button("Confirmar desinstalación").clicked() {
+                        self.show_uninstall_confirm = false;
+                        match crate::cli::uninstall_silent() {
+                            Ok(_) => { self.uninstall_result = Some(Ok(())); }
+                            Err(e) => { self.uninstall_result = Some(Err(e.to_string())); }
+                        }
+                    }
+                    if ui.button("Cancelar").clicked() {
+                        self.show_uninstall_confirm = false;
+                    }
+                });
+            } else {
+                if ui.button("Desinstalar stress").clicked() {
+                    self.show_uninstall_confirm = true;
+                }
             }
         });
     }
