@@ -110,6 +110,10 @@ pub struct TestStressApp {
     // Sistema de monitoreo
     system_monitor: Option<SystemMonitor>,
     monitoring_config: MonitoringConfig,
+
+    // Verificación de actualizaciones
+    update_available: Option<String>,
+    update_receiver: Option<mpsc::Receiver<String>>,
 }
 
 // Acción pendiente tras advertencia
@@ -117,6 +121,37 @@ pub struct TestStressApp {
 enum PendingAction {
     RunSingleTest,
     RunSuiteTest,
+}
+
+async fn check_for_updates() -> Option<String> {
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("stress/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .ok()?;
+
+    let response = client
+        .get("https://api.github.com/repos/Guntzx/stress/releases/latest")
+        .send()
+        .await
+        .ok()?;
+
+    let json: serde_json::Value = response.json().await.ok()?;
+    let tag = json["tag_name"].as_str()?;
+    let latest = tag.trim_start_matches('v');
+
+    if is_newer_version(env!("CARGO_PKG_VERSION"), latest) {
+        Some(latest.to_string())
+    } else {
+        None
+    }
+}
+
+fn is_newer_version(current: &str, latest: &str) -> bool {
+    let parse = |s: &str| -> (u64, u64, u64) {
+        let mut parts = s.split('.').filter_map(|p| p.parse::<u64>().ok());
+        (parts.next().unwrap_or(0), parts.next().unwrap_or(0), parts.next().unwrap_or(0))
+    };
+    parse(latest) > parse(current)
 }
 
 impl TestStressApp {
@@ -162,6 +197,18 @@ impl TestStressApp {
                 let mut config = MonitoringConfig::default();
                 config.enabled = prefs.monitoring_enabled;
                 config
+            },
+            update_available: None,
+            update_receiver: {
+                let (tx, rx) = mpsc::channel();
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(async move {
+                        if let Some(version) = check_for_updates().await {
+                            let _ = tx.send(version);
+                        }
+                    });
+                }
+                Some(rx)
             },
         };
         // Solo abrir terminal si la preferencia está activa y no hay terminal abierta
@@ -845,7 +892,37 @@ impl eframe::App for TestStressApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Verificar si alguna prueba terminó
         self.check_completion();
-        
+
+        // Recibir resultado de verificación de actualizaciones
+        if let Some(ref rx) = self.update_receiver {
+            if let Ok(version) = rx.try_recv() {
+                self.update_available = Some(version);
+                self.update_receiver = None;
+            }
+        }
+
+        // Banner de actualización disponible
+        if let Some(ref version) = self.update_available.clone() {
+            egui::TopBottomPanel::top("update_banner").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(255, 193, 7),
+                        format!("Nueva version disponible: v{}.", version),
+                    );
+                    ui.label("Ejecuta");
+                    ui.code("update.sh");
+                    ui.label("(macOS/Linux) o");
+                    ui.code("update.ps1");
+                    ui.label("(Windows) para actualizar.");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("✕").clicked() {
+                            self.update_available = None;
+                        }
+                    });
+                });
+            });
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Test Stress - Pruebas de Carga");
             
