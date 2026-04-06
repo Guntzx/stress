@@ -5,6 +5,19 @@ Compatible con macOS, Linux y Windows.
 
 ---
 
+## Plataformas y arquitecturas soportadas
+
+| Sistema operativo | Arquitectura          | Procesador                        |
+|-------------------|-----------------------|-----------------------------------|
+| macOS             | ARM64 (Apple Silicon) | Apple M1, M2, M3, M4 y superiores |
+| macOS             | x86_64 (Intel)        | Intel Core (2010 en adelante)     |
+| Linux             | x86_64                | AMD64 / Intel 64-bit              |
+| Windows           | x86_64                | AMD64 / Intel 64-bit              |
+
+> **Nota:** En macOS, los binarios son nativos para cada arquitectura (no se usa Rosetta 2). Descarga el binario correcto según tu procesador o compila desde el código fuente.
+
+---
+
 ## Instalación
 
 ### macOS / Linux
@@ -26,6 +39,54 @@ curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/install.sh | bas
 ```
 
 > El instalador detecta tu sistema, instala Rust si es necesario, compila la app y la añade al PATH.
+
+---
+
+## Actualización
+
+### macOS / Linux
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/update.sh | bash
+```
+
+### Windows — PowerShell
+
+```powershell
+irm https://raw.githubusercontent.com/Guntzx/stress/main/update.ps1 | iex
+```
+
+### Windows — Git Bash / WSL
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/update.sh | bash
+```
+
+> El actualizador descarga los últimos cambios, recompila y reemplaza el binario instalado.
+
+---
+
+## Desinstalación
+
+### macOS / Linux
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/uninstall.sh | bash
+```
+
+### Windows — PowerShell
+
+```powershell
+irm https://raw.githubusercontent.com/Guntzx/stress/main/uninstall.ps1 | iex
+```
+
+### Windows — Git Bash / WSL
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/uninstall.sh | bash
+```
+
+> El desinstalador elimina el binario y limpia la entrada del PATH.
 
 ---
 
