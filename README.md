@@ -5,6 +5,19 @@ Compatible con macOS, Linux y Windows.
 
 ---
 
+## Plataformas y arquitecturas soportadas
+
+| Sistema operativo | Arquitectura          | Procesador                        |
+|-------------------|-----------------------|-----------------------------------|
+| macOS             | ARM64 (Apple Silicon) | Apple M1, M2, M3, M4 y superiores |
+| macOS             | x86_64 (Intel)        | Intel Core (2010 en adelante)     |
+| Linux             | x86_64                | AMD64 / Intel 64-bit              |
+| Windows           | x86_64                | AMD64 / Intel 64-bit              |
+
+> **Nota:** En macOS, los binarios son nativos para cada arquitectura (no se usa Rosetta 2). Descarga el binario correcto según tu procesador o compila desde el código fuente.
+
+---
+
 ## Instalación
 
 ### macOS / Linux
