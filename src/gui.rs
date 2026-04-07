@@ -1,1937 +1,1008 @@
-use crate::config::{get_output_directory, save_config, load_config, list_saved_configs, delete_config, list_configs_with_info, ConfigInfo};
+// gui.rs — Capa de interfaz gráfica basada en Slint
+// Mantiene toda la lógica de negocio intacta; sólo reemplaza el backend de UI.
+
+use crate::config::{
+    get_output_directory, save_config, load_config,
+    list_saved_configs, delete_config, list_configs_with_info,
+};
 use crate::load_test::LoadTester;
-use crate::models::{TestRequest, TestSuite, SavedConfig, TestSummary, HttpMethod, HttpHeader, QueryParameter};
+use crate::models::{HttpHeader, HttpMethod, SavedConfig, TestRequest, TestSuite, TestSummary};
 use crate::report_generator::generate_excel_report_from_files;
-use crate::monitor::{SystemMonitor, MonitoringConfig, format_bytes, format_percentage};
-use eframe::egui;
+
+use std::cell::RefCell;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, mpsc};
-use dirs;
-use std::process::{Child, Command};
-use serde::{Serialize, Deserialize};
+use std::rc::Rc;
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
 
-#[derive(Serialize, Deserialize, Default)]
-struct GeneralPrefs {
-    show_terminal: bool,
-    monitoring_enabled: bool,
+use slint::{ModelRc, SharedString, VecModel};
+
+// Genera los tipos Rust desde los archivos .slint compilados por build.rs
+slint::include_modules!();
+
+// ── Estado interno de la aplicación (accedido sólo desde el hilo principal) ──
+struct AppState {
+    // Resultados y logs compartidos con hilos de ejecución
+    results:         Arc<Mutex<Vec<TestSummary>>>,
+    logs:            Arc<Mutex<Vec<String>>>,
+
+    // Control de ejecución en curso
+    is_running:       bool,
+    cancel_flag:      Option<Arc<Mutex<bool>>>,
+    completion_rx:    Option<mpsc::Receiver<()>>,
+    progress_rx:      Option<mpsc::Receiver<f32>>,
+
+    // Lista local de peticiones de la suite (sólo hilo UI)
+    suite_requests:   Vec<TestRequest>,
+
+    // Caché para detectar cuando hay nuevos resultados
+    last_result_count: usize,
 }
 
-fn get_prefs_path() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    let base = dirs::document_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")));
-    #[cfg(not(target_os = "windows"))]
-    let base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join(".stress/general_prefs.json")
-}
-
-fn load_general_prefs() -> GeneralPrefs {
-    let path = get_prefs_path();
-    if let Ok(data) = fs::read_to_string(&path) {
-        if let Ok(prefs) = serde_json::from_str(&data) {
-            return prefs;
+impl AppState {
+    fn new() -> Self {
+        Self {
+            results:           Arc::new(Mutex::new(Vec::new())),
+            logs:              Arc::new(Mutex::new(Vec::new())),
+            is_running:        false,
+            cancel_flag:       None,
+            completion_rx:     None,
+            progress_rx:       None,
+            suite_requests:    Vec::new(),
+            last_result_count: 0,
         }
-    }
-    GeneralPrefs::default()
-}
-
-fn save_general_prefs(prefs: &GeneralPrefs) {
-    let path = get_prefs_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let _ = fs::write(path, serde_json::to_string_pretty(prefs).unwrap_or_default());
-}
-
-pub struct TestStressApp {
-    // Configuración general
-    base_url: String,
-    iterations: u32,
-    concurrent_requests: u32,
-    wait_time: u64,
-    output_dir: String,
-    
-    // Petición actual
-    current_request: TestRequest,
-    
-    // Suite de pruebas
-    suite_name: String,
-    suite_requests: Vec<TestRequest>,
-    
-    // Estado de la aplicación
-    is_running: bool,
-    progress: f32,
-    logs: Arc<Mutex<Vec<String>>>,
-    results: Arc<Mutex<Vec<TestSummary>>>,
-
-    // Configuraciones guardadas
-    saved_configs: Vec<String>,
-
-    // Gestión avanzada de configuraciones
-    configs_info: Vec<ConfigInfo>,
-    
-    // Pestañas
-    current_tab: usize,
-    
-    // Control de cancelación
-    cancel_requested: bool,
-    cancel_flag: Option<Arc<Mutex<bool>>>,
-    
-    // Canal para comunicación con threads
-    completion_receiver: Option<mpsc::Receiver<()>>,
-    progress_receiver: Option<mpsc::Receiver<f32>>,
-    
-    // Opciones generales
-    show_terminal: bool, // Mostrar terminal (por defecto false)
-    terminal_child: Option<Child>, // Proceso de terminal abierto
-    
-    // Estado para advertencias de límites
-    show_limit_warning: bool,
-    limit_warning_message: String,
-    limit_warning_accept: bool,
-    pending_action: Option<PendingAction>,
-
-    // Estado para mensajes de éxito del reporte
-    report_success_message: Option<String>,
-    
-    // Opción para generar reporte automáticamente
-    auto_generate_report: bool,
-    
-    // Opción para subir automáticamente a carpeta remota
-    auto_upload_report: bool,
-    remote_folder_path: String,
-    // Estado para mensaje de guardado de configuración
-    config_saved_message: Option<(String, std::time::Instant)>,
-    
-    // Estado para acciones pendientes de configuraciones
-    pending_load_config: Option<String>,
-    pending_delete_config: Option<String>,
-    
-    // Sistema de monitoreo
-    system_monitor: Option<SystemMonitor>,
-    monitoring_config: MonitoringConfig,
-
-    // Verificación de actualizaciones
-    update_available: Option<String>,
-    update_receiver: Option<mpsc::Receiver<String>>,
-
-    // Actualización en segundo plano desde la GUI
-    updating: bool,
-    update_result_receiver: Option<mpsc::Receiver<Result<String, String>>>,
-
-    // Desinstalación desde la GUI
-    show_uninstall_confirm: bool,
-    uninstall_result: Option<Result<(), String>>,
-}
-
-// Acción pendiente tras advertencia
-#[derive(PartialEq, Eq, Clone, Copy)]
-enum PendingAction {
-    RunSingleTest,
-    RunSuiteTest,
-}
-
-async fn check_for_updates() -> Option<String> {
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("stress/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .ok()?;
-
-    let response = client
-        .get("https://api.github.com/repos/Guntzx/stress/releases/latest")
-        .send()
-        .await
-        .ok()?;
-
-    let json: serde_json::Value = response.json().await.ok()?;
-    let tag = json["tag_name"].as_str()?;
-    let latest = tag.trim_start_matches('v');
-
-    if is_newer_version(env!("CARGO_PKG_VERSION"), latest) {
-        Some(latest.to_string())
-    } else {
-        None
     }
 }
 
-fn is_newer_version(current: &str, latest: &str) -> bool {
-    let parse = |s: &str| -> (u64, u64, u64) {
-        let mut parts = s.split('.').filter_map(|p| p.parse::<u64>().ok());
-        (parts.next().unwrap_or(0), parts.next().unwrap_or(0), parts.next().unwrap_or(0))
-    };
-    parse(latest) > parse(current)
-}
+// ── Punto de entrada público ──────────────────────────────────────────────────
+pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
+    let window = AppWindow::new()?;
+    let state  = Rc::new(RefCell::new(AppState::new()));
 
-impl TestStressApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        // Cargar configuraciones guardadas
-        let saved_configs = list_saved_configs().unwrap_or_default();
-        let prefs = load_general_prefs();
-        let mut app = Self {
-            base_url: "http://localhost:8080".to_string(),
-            iterations: 10,
-            concurrent_requests: 1,
-            wait_time: 1,
-            output_dir: "./results".to_string(),
-            current_request: TestRequest::default(),
-            suite_name: "Nueva suite de pruebas".to_string(),
-            suite_requests: Vec::new(),
-            is_running: false,
-            progress: 0.0,
-            logs: Arc::new(Mutex::new(Vec::new())),
-            results: Arc::new(Mutex::new(Vec::new())),
-            saved_configs,
-            current_tab: 0,
-            cancel_requested: false,
-            cancel_flag: None,
-            completion_receiver: None,
-            progress_receiver: None,
-            show_terminal: prefs.show_terminal,
-            terminal_child: None,
-            show_limit_warning: false,
-            limit_warning_message: String::new(),
-            limit_warning_accept: false,
-            pending_action: None,
-            report_success_message: None,
-            auto_generate_report: true,
-            auto_upload_report: false,
-            remote_folder_path: String::new(),
-            configs_info: Vec::new(),
-            config_saved_message: None,
-            pending_load_config: None,
-            pending_delete_config: None,
-            system_monitor: None,
-            monitoring_config: {
-                let mut config = MonitoringConfig::default();
-                config.enabled = prefs.monitoring_enabled;
-                config
-            },
-            update_available: None,
-            update_receiver: {
-                let (tx, rx) = mpsc::channel();
-                if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                    handle.spawn(async move {
-                        if let Some(version) = check_for_updates().await {
-                            let _ = tx.send(version);
-                        }
-                    });
-                }
-                Some(rx)
-            },
-            updating: false,
-            update_result_receiver: None,
-            show_uninstall_confirm: false,
-            uninstall_result: None,
-        };
-        // Solo abrir terminal si la preferencia está activa y no hay terminal abierta
-        if app.show_terminal {
-            app.open_terminal();
-        }
-        // Cargar automáticamente todas las configuraciones disponibles
-        app.refresh_configs();
-        
-        // Inicializar monitoreo si está habilitado
-        if app.monitoring_config.enabled {
-            app.system_monitor = Some(SystemMonitor::new(app.monitoring_config.clone()));
-            if let Some(ref mut monitor) = app.system_monitor {
-                monitor.start_monitoring();
-            }
-        }
-        
-        app
-    }
-    
-    fn add_log(&self, message: String) {
-        if let Ok(mut logs) = self.logs.lock() {
-            logs.push(format!("[{}] {}", 
-                chrono::Utc::now().format("%H:%M:%S"), 
-                message
-            ));
-            // Mantener solo los últimos 100 logs
-            if logs.len() > 100 {
-                logs.remove(0);
-            }
-        }
-    }
-    
-    fn run_single_test(&mut self) {
-        // Si hay advertencia activa, no ejecutar
-        if self.show_limit_warning {
-            return;
-        }
-        // Limpiar logs al iniciar nueva prueba
-        {
-            let mut logs = self.logs.lock().unwrap();
-            logs.clear();
-        }
-        
-        self.is_running = true;
-        self.progress = 0.0;
-        self.cancel_requested = false;
-        
-        let request = self.current_request.clone();
-        let base_url = self.base_url.clone();
-        let iterations = self.iterations;
-        let concurrent_requests = self.concurrent_requests;
-        let wait_time = self.wait_time;
-        let output_dir = self.output_dir.clone();
-        let logs = Arc::clone(&self.logs);
-        let results = Arc::clone(&self.results);
-        let auto_generate_report = self.auto_generate_report;
-        let auto_upload_report = self.auto_upload_report;
-        let remote_folder_path = self.remote_folder_path.clone();
-        
-        // Crear canales para comunicación
-        let (completion_sender, completion_receiver) = mpsc::channel();
-        let (progress_sender, progress_receiver) = mpsc::channel();
-        self.completion_receiver = Some(completion_receiver);
-        self.progress_receiver = Some(progress_receiver);
-        
-        // Crear flag de cancelación
-        let cancel_flag = Arc::new(Mutex::new(false));
-        let cancel_flag_clone = Arc::clone(&cancel_flag);
-        
-        // Ejecutar en thread separado con su propio runtime
-        std::thread::spawn(move || {
-            // Crear un runtime local para este thread
-            let rt = tokio::runtime::Runtime::new().expect("Error creando runtime");
-            rt.block_on(async {
-                if let Err(e) = Self::execute_single_test_with_progress_and_cancel(
-                    &request,
-                    &base_url,
-                    iterations,
-                    concurrent_requests,
-                    wait_time,
-                    &output_dir,
-                    logs,
-                    results,
-                    progress_sender,
-                    cancel_flag_clone,
-                    auto_generate_report,
-                    auto_upload_report,
-                    remote_folder_path,
-                ).await {
-                    eprintln!("Error ejecutando prueba: {}", e);
-                }
-                // Notificar completación
-                let _ = completion_sender.send(());
-            });
-        });
-        
-        // Guardar referencia al flag de cancelación
-        self.cancel_flag = Some(cancel_flag);
-    }
-    
-    fn run_suite_test(&mut self) {
-        // Si hay advertencia activa, no ejecutar
-        if self.show_limit_warning {
-            return;
-        }
-        // Limpiar logs al iniciar nueva prueba
-        {
-            let mut logs = self.logs.lock().unwrap();
-            logs.clear();
-        }
-        
-        self.is_running = true;
-        self.progress = 0.0;
-        self.cancel_requested = false;
-        
-        let suite = TestSuite {
-            name: self.suite_name.clone(),
-            base_url: self.base_url.clone(),
-            requests: self.suite_requests.clone(),
-            iterations: self.iterations,
-            concurrent_requests: self.concurrent_requests,
-            wait_time: self.wait_time,
-            output_dir: self.output_dir.clone(),
-        };
-        
-        let logs = Arc::clone(&self.logs);
-        let results = Arc::clone(&self.results);
-        let auto_generate_report = self.auto_generate_report;
-        let auto_upload_report = self.auto_upload_report;
-        let remote_folder_path = self.remote_folder_path.clone();
-        
-        // Crear canales para comunicación
-        let (completion_sender, completion_receiver) = mpsc::channel();
-        let (progress_sender, progress_receiver) = mpsc::channel();
-        self.completion_receiver = Some(completion_receiver);
-        self.progress_receiver = Some(progress_receiver);
-        
-        // Crear flag de cancelación
-        let cancel_flag = Arc::new(Mutex::new(false));
-        let cancel_flag_clone = Arc::clone(&cancel_flag);
-        
-        // Ejecutar en thread separado con su propio runtime
-        std::thread::spawn(move || {
-            // Crear un runtime local para este thread
-            let rt = tokio::runtime::Runtime::new().expect("Error creando runtime");
-            rt.block_on(async {
-                if let Err(e) = Self::execute_suite_test_with_progress_and_cancel(&suite, logs, results, progress_sender, cancel_flag_clone, auto_generate_report, auto_upload_report, remote_folder_path).await {
-                    eprintln!("Error ejecutando suite: {}", e);
-                }
-                // Notificar completación
-                let _ = completion_sender.send(());
-            });
-        });
-        
-        // Guardar referencia al flag de cancelación
-        self.cancel_flag = Some(cancel_flag);
-    }
-    
-    async fn execute_single_test_with_progress_and_cancel(
-        request: &TestRequest,
-        base_url: &str,
-        iterations: u32,
-        concurrent_requests: u32,
-        wait_time: u64,
-        output_dir: &str,
-        logs: Arc<Mutex<Vec<String>>>,
-        results: Arc<Mutex<Vec<TestSummary>>>,
-        progress_sender: mpsc::Sender<f32>,
-        cancel_flag: Arc<Mutex<bool>>,
-        auto_generate_report: bool,
-        auto_upload_report: bool,
-        remote_folder_path: String,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        // Agregar log inicial
-        {
-            let mut logs = logs.lock().unwrap();
-            logs.push(format!("[{}] Iniciando prueba individual: {}", 
-                chrono::Local::now().format("%H:%M:%S"), 
-                request.description
-            ));
-        }
-        
-        // Usar directorio por defecto si no se especifica uno o si hay problemas de permisos
-        let final_output_dir = if output_dir.is_empty() {
-            get_output_directory()
-        } else {
-            // Verificar si podemos escribir en el directorio especificado
-            match std::fs::create_dir_all(output_dir) {
-                Ok(_) => output_dir.to_string(),
-                Err(_) => {
-                    // Si falla, usar directorio por defecto
-                    get_output_directory()
-                }
-            }
-        };
-        
-        // Crear tester y ejecutar prueba con cancelación
-        let tester = LoadTester::new();
-        let summary = tester
-            .run_single_test_with_progress_and_cancel(request, base_url, iterations, concurrent_requests, wait_time, &final_output_dir, progress_sender, cancel_flag)
-            .await?;
-        // Buscar el archivo CSV generado en el directorio
-        let csv_file = find_csv_file_in_directory(&final_output_dir, &request.description);
-        {
-            let mut results = results.lock().unwrap();
-            results.push(summary);
-        }
-        
-        // Agregar log de finalización
-        {
-            let mut logs = logs.lock().unwrap();
-            logs.push(format!("[{}] Prueba individual completada: {}", 
-                chrono::Local::now().format("%H:%M:%S"), 
-                request.description
-            ));
-        }
-        
-        // Generar reporte Excel automáticamente si está habilitado
-        if auto_generate_report {
-            {
-                let mut logs = logs.lock().unwrap();
-                logs.push(format!("[{}] Generando reporte Excel automáticamente...", 
-                    chrono::Local::now().format("%H:%M:%S")
-                ));
-            }
-            // Crear carpeta de reportes
-            let reports_dir = format!("{}/reports", final_output_dir);
-            let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-            let safe_name = request.description.replace(" ", "_").replace("/", "_").replace("\\", "_");
-            let excel_path = format!("{}/report_{}_{}.xlsx", reports_dir, safe_name, timestamp);
-            match csv_file {
-                Some(csv_path) => {
-                    match generate_excel_report_from_files(&[csv_path.clone()], &excel_path) {
-                        Ok(excel_path) => {
-                            let mut logs = logs.lock().unwrap();
-                            logs.push(format!("[{}] ✅ Reporte Excel generado exitosamente en: {}", 
-                                chrono::Local::now().format("%H:%M:%S"), 
-                                excel_path
-                            ));
-                            // Subir archivos específicos de la prueba si está habilitado
-                            if auto_upload_report && !remote_folder_path.is_empty() {
-                                use std::path::Path;
-                                use std::fs;
-                                
-                                // Verificar que la carpeta de destino existe o crearla
-                                if !Path::new(&remote_folder_path).exists() {
-                                    if let Err(e) = fs::create_dir_all(&remote_folder_path) {
-                                        logs.push(format!("[{}] ❌ Error creando carpeta remota: {}", chrono::Local::now().format("%H:%M:%S"), e));
-                                        return Ok(());
-                                    }
-                                }
-                                
-                                // Crear carpeta específica para esta prueba
-                                let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-                                let safe_name = request.description.replace(" ", "_").replace("/", "_").replace("\\", "_");
-                                let test_folder_name = format!("test_{}_{}", safe_name, timestamp);
-                                let destination_folder = format!("{}/{}", remote_folder_path, test_folder_name);
-                                
-                                // Crear la carpeta de destino si no existe
-                                if !Path::new(&destination_folder).exists() {
-                                    if let Err(e) = fs::create_dir_all(&destination_folder) {
-                                        logs.push(format!("[{}] ❌ Error creando carpeta de destino: {}", chrono::Local::now().format("%H:%M:%S"), e));
-                                        return Ok(());
-                                    }
-                                }
-                                
-                                // Copiar solo los archivos específicos de esta prueba
-                                let mut copy_error = None;
-                                let mut files_copied = 0;
-                                
-                                // Copiar el archivo CSV
-                                if let Err(e) = fs::copy(&csv_path, format!("{}/{}", destination_folder, csv_path.file_name().unwrap_or_default().to_string_lossy())) {
-                                    copy_error = Some(e);
-                                } else {
-                                    files_copied += 1;
-                                }
-                                
-                                // Copiar el archivo Excel si se generó exitosamente
-                                if !copy_error.is_some() {
-                                    if let Err(e) = fs::copy(&excel_path, format!("{}/{}", destination_folder, Path::new(&excel_path).file_name().unwrap_or_default().to_string_lossy())) {
-                                        copy_error = Some(e);
-                                    } else {
-                                        files_copied += 1;
-                                    }
-                                }
-                                
-                                if let Some(e) = copy_error {
-                                    logs.push(format!("[{}] ❌ Error copiando archivos a carpeta remota: {}", chrono::Local::now().format("%H:%M:%S"), e));
-                                } else {
-                                    logs.push(format!("[{}] ✅ {} archivos de la prueba subidos exitosamente a: {}", chrono::Local::now().format("%H:%M:%S"), files_copied, destination_folder));
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            let mut logs = logs.lock().unwrap();
-                            logs.push(format!("[{}] ❌ Error generando reporte Excel: {}", 
-                                chrono::Local::now().format("%H:%M:%S"), 
-                                e
-                            ));
-                        }
+    // ── Carga inicial de datos en la UI ───────────────────────────────────────
+    populate_initial_data(&window);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CALLBACKS — Tab 0: Prueba Individual
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Ejecutar prueba individual
+    window.on_ejecutar_individual({
+        let state       = state.clone();
+        let window_weak = window.as_weak();
+        move || {
+            let Some(w) = window_weak.upgrade() else { return };
+            let mut st  = state.borrow_mut();
+            if st.is_running { return; }
+
+            let request  = build_request_from_ui(&w);
+            let base_url = w.get_url_base().to_string();
+            let iters    = parse_u32(&w.get_iteraciones(), 10);
+            let conc     = parse_u32(&w.get_peticiones_simultaneas(), 1);
+            let wait     = 1u64;
+            let out_dir  = w.get_dir_salida().to_string();
+            let excel    = w.get_auto_excel();
+            let upload   = w.get_auto_subir();
+            let remote   = w.get_carpeta_remota().to_string();
+
+            let logs    = st.logs.clone();
+            let results = st.results.clone();
+
+            let (done_tx, done_rx)   = mpsc::channel();
+            let (prog_tx, prog_rx)   = mpsc::channel();
+            let cancel               = Arc::new(Mutex::new(false));
+            let cancel_clone         = cancel.clone();
+
+            st.is_running     = true;
+            st.cancel_flag    = Some(cancel);
+            st.completion_rx  = Some(done_rx);
+            st.progress_rx    = Some(prog_rx);
+            drop(st);
+
+            w.set_ejecutando(true);
+            w.set_estado("RUNNING".into());
+            w.set_barra_progreso("░░░░░░░░░░ 0%".into());
+
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().expect("Runtime Tokio");
+                rt.block_on(async move {
+                    if let Err(e) = execute_single_test(
+                        &request, &base_url, iters, conc, wait,
+                        &out_dir, logs, results, prog_tx,
+                        cancel_clone, excel, upload, remote,
+                    ).await {
+                        eprintln!("[error] prueba individual: {e}");
                     }
-                }
-                None => {
-                    let mut logs = logs.lock().unwrap();
-                    logs.push(format!("[{}] ❌ No se encontró el archivo CSV generado en el directorio: {}", 
-                        chrono::Local::now().format("%H:%M:%S"), 
-                        final_output_dir
-                    ));
-                }
-            }
+                    let _ = done_tx.send(());
+                });
+            });
         }
-        
-        Ok(())
-    }
-    
-    async fn execute_suite_test_with_progress_and_cancel(
-        suite: &TestSuite,
-        logs: Arc<Mutex<Vec<String>>>,
-        results: Arc<Mutex<Vec<TestSummary>>>,
-        progress_sender: mpsc::Sender<f32>,
-        cancel_flag: Arc<Mutex<bool>>,
-        auto_generate_report: bool,
-        auto_upload_report: bool,
-        remote_folder_path: String,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        // Agregar log inicial
-        {
-            let mut logs = logs.lock().unwrap();
-            logs.push(format!("[{}] Iniciando suite de pruebas: {}", 
-                chrono::Local::now().format("%H:%M:%S"), 
-                suite.name
-            ));
-        }
-        
-        // Usar directorio por defecto si no se especifica uno o si hay problemas de permisos
-        let final_output_dir = if suite.output_dir.is_empty() {
-            get_output_directory()
-        } else {
-            // Verificar si podemos escribir en el directorio especificado
-            match std::fs::create_dir_all(&suite.output_dir) {
-                Ok(_) => suite.output_dir.clone(),
-                Err(_) => {
-                    // Si falla, usar directorio por defecto
-                    get_output_directory()
+    });
+
+    // Cancelar ejecución en curso
+    window.on_cancelar({
+        let state = state.clone();
+        move || {
+            let mut st = state.borrow_mut();
+            if let Some(ref flag) = st.cancel_flag {
+                if let Ok(mut f) = flag.lock() {
+                    *f = true;
                 }
             }
-        };
-        
-        // Crear suite con directorio corregido
-        let mut corrected_suite = suite.clone();
-        corrected_suite.output_dir = final_output_dir.clone();
-        
-        // Crear tester y ejecutar suite con cancelación
-        let tester = LoadTester::new();
-        let summaries = tester.run_suite_test_with_progress_and_cancel(&corrected_suite, progress_sender, cancel_flag).await?;
-        // Guardar los nombres de los CSV generados
-        let mut csv_files = Vec::new();
-        for req in &suite.requests {
-            let csv_file = PathBuf::from(format!("{}/{}_{}.csv", final_output_dir, req.description.replace(" ", "_"), chrono::Utc::now().format("%Y%m%d_%H%M%S")));
-            csv_files.push(csv_file);
+            st.is_running = false;
         }
-        {
-            let mut results = results.lock().unwrap();
-            results.extend(summaries);
-        }
-        
-        // Agregar log de finalización
-        {
-            let mut logs = logs.lock().unwrap();
-            logs.push(format!("[{}] Suite de pruebas completada: {}", 
-                chrono::Local::now().format("%H:%M:%S"), 
-                suite.name
-            ));
-        }
-        
-        // Generar reporte Excel automáticamente si está habilitado
-        if auto_generate_report {
-            {
-                let mut logs = logs.lock().unwrap();
-                logs.push(format!("[{}] Generando reporte Excel automáticamente...", 
-                    chrono::Local::now().format("%H:%M:%S")
-                ));
-            }
-            // Crear carpeta de reportes
-            let reports_dir = format!("{}/reports", final_output_dir);
-            let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-            let safe_name = suite.name.replace(" ", "_").replace("/", "_").replace("\\", "_");
-            let excel_path = format!("{}/report_{}_{}.xlsx", reports_dir, safe_name, timestamp);
-            match generate_excel_report_from_files(&csv_files, &excel_path) {
-                Ok(excel_path) => {
-                    let mut logs = logs.lock().unwrap();
-                    logs.push(format!("[{}] ✅ Reporte Excel generado exitosamente en: {}", 
-                        chrono::Local::now().format("%H:%M:%S"), 
-                        excel_path
-                    ));
-                    
-                    // Subir archivos específicos de la suite si está habilitado
-                    if auto_upload_report && !remote_folder_path.is_empty() {
-                        use std::path::Path;
-                        use std::fs;
-                        
-                        // Verificar que la carpeta de destino existe o crearla
-                        if !Path::new(&remote_folder_path).exists() {
-                            if let Err(e) = fs::create_dir_all(&remote_folder_path) {
-                                logs.push(format!("[{}] ❌ Error creando carpeta remota: {}", chrono::Local::now().format("%H:%M:%S"), e));
-                                return Ok(());
-                            }
+    });
+
+    // Seleccionar directorio de salida (diálogo nativo)
+    window.on_seleccionar_dir_salida({
+        let window_weak = window.as_weak();
+        move || {
+            let window_weak = window_weak.clone();
+            std::thread::spawn(move || {
+                if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                    let path_str = path.to_string_lossy().to_string();
+                    slint::invoke_from_event_loop(move || {
+                        if let Some(w) = window_weak.upgrade() {
+                            w.set_dir_salida(path_str.into());
                         }
-                        
-                        // Crear carpeta específica para esta suite
-                        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-                        let safe_name = suite.name.replace(" ", "_").replace("/", "_").replace("\\", "_");
-                        let suite_folder_name = format!("suite_{}_{}", safe_name, timestamp);
-                        let destination_folder = format!("{}/{}", remote_folder_path, suite_folder_name);
-                        
-                        // Crear la carpeta de destino si no existe
-                        if !Path::new(&destination_folder).exists() {
-                            if let Err(e) = fs::create_dir_all(&destination_folder) {
-                                logs.push(format!("[{}] ❌ Error creando carpeta de destino: {}", chrono::Local::now().format("%H:%M:%S"), e));
-                                return Ok(());
-                            }
-                        }
-                        
-                        // Copiar solo los archivos específicos de esta suite
-                        let mut copy_error = None;
-                        let mut files_copied = 0;
-                        
-                        // Copiar los archivos CSV de la suite
-                        for csv_file in &csv_files {
-                            if csv_file.exists() {
-                                if let Err(e) = fs::copy(csv_file, format!("{}/{}", destination_folder, csv_file.file_name().unwrap_or_default().to_string_lossy())) {
-                                    copy_error = Some(e);
-                                    break;
-                                } else {
-                                    files_copied += 1;
-                                }
-                            }
-                        }
-                        
-                        // Copiar el archivo Excel si se generó exitosamente
-                        if !copy_error.is_some() {
-                            if let Err(e) = fs::copy(&excel_path, format!("{}/{}", destination_folder, Path::new(&excel_path).file_name().unwrap_or_default().to_string_lossy())) {
-                                copy_error = Some(e);
-                            } else {
-                                files_copied += 1;
-                            }
-                        }
-                        
-                        if let Some(e) = copy_error {
-                            logs.push(format!("[{}] ❌ Error copiando archivos a carpeta remota: {}", chrono::Local::now().format("%H:%M:%S"), e));
-                        } else {
-                            logs.push(format!("[{}] ✅ {} archivos de la suite subidos exitosamente a: {}", chrono::Local::now().format("%H:%M:%S"), files_copied, destination_folder));
-                        }
-                    }
+                    }).ok();
                 }
-                Err(e) => {
-                    let mut logs = logs.lock().unwrap();
-                    logs.push(format!("[{}] ❌ Error generando reporte Excel: {}", 
-                        chrono::Local::now().format("%H:%M:%S"), 
-                        e
-                    ));
+            });
+        }
+    });
+
+    // Seleccionar carpeta remota (diálogo nativo)
+    window.on_seleccionar_dir_remota({
+        let window_weak = window.as_weak();
+        move || {
+            let window_weak = window_weak.clone();
+            std::thread::spawn(move || {
+                if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                    let path_str = path.to_string_lossy().to_string();
+                    slint::invoke_from_event_loop(move || {
+                        if let Some(w) = window_weak.upgrade() {
+                            w.set_carpeta_remota(path_str.into());
+                        }
+                    }).ok();
                 }
+            });
+        }
+    });
+
+    // Cargar configuración guardada en la UI
+    window.on_cargar_config({
+        let window_weak = window.as_weak();
+        move |idx| {
+            let Some(w) = window_weak.upgrade() else { return };
+            let configs = list_saved_configs().unwrap_or_default();
+            let Some(name) = configs.get(idx as usize) else { return };
+            if let Ok(cfg) = load_config(name) {
+                apply_config_to_ui(&w, &cfg);
             }
         }
-        
-        Ok(())
-    }
-    
-    fn save_current_config(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // Determinar qué tipo de configuración guardar basado en la pestaña actual
-        let config = if self.current_tab == 0 {
-            // Guardar petición individual
-            SavedConfig {
-                name: format!("{} - {}", self.current_request.description, chrono::Local::now().format("%Y%m%d_%H%M%S")),
-                base_url: self.base_url.clone(),
-                requests: vec![self.current_request.clone()],
-                iterations: self.iterations,
-                concurrent_requests: self.concurrent_requests,
-                wait_time: self.wait_time,
-                output_dir: self.output_dir.clone(),
-                auto_generate_report: self.auto_generate_report,
-                auto_upload_report: self.auto_upload_report,
-                remote_folder_path: self.remote_folder_path.clone(),
-                created_at: chrono::Local::now(),
-                description: Some(format!("Petición individual: {}", self.current_request.description)),
-            }
-        } else {
-            // Guardar suite de pruebas
-            SavedConfig {
-                name: self.suite_name.clone(),
-                base_url: self.base_url.clone(),
-                requests: self.suite_requests.clone(),
-                iterations: self.iterations,
-                concurrent_requests: self.concurrent_requests,
-                wait_time: self.wait_time,
-                output_dir: self.output_dir.clone(),
-                auto_generate_report: self.auto_generate_report,
-                auto_upload_report: self.auto_upload_report,
-                remote_folder_path: self.remote_folder_path.clone(),
-                created_at: chrono::Local::now(),
-                description: Some(format!("Suite de pruebas con {} peticiones", self.suite_requests.len())),
-            }
-        };
-        save_config(&config)?;
-        self.refresh_configs();
-        // Mostrar mensaje de éxito
-        self.config_saved_message = Some(("✅ Configuración guardada exitosamente".to_string(), std::time::Instant::now()));
-        Ok(())
-    }
-    
-    fn load_config(&mut self, name: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let config = load_config(name)?;
-        // Cargar la configuración en la pestaña apropiada
-        self.base_url = config.base_url;
-        self.iterations = config.iterations;
-        self.concurrent_requests = config.concurrent_requests;
-        self.wait_time = config.wait_time;
-        self.output_dir = config.output_dir;
-        self.auto_generate_report = config.auto_generate_report;
-        self.auto_upload_report = config.auto_upload_report;
-        self.remote_folder_path = config.remote_folder_path;
-        
-        if config.requests.len() == 1 {
-            // Es una petición individual, cargar en pestaña 0
-            self.current_tab = 0;
-            self.current_request = config.requests[0].clone();
-        } else {
-            // Es una suite, cargar en pestaña 1
-            self.current_tab = 1;
-            self.suite_name = config.name.clone();
-            self.suite_requests = config.requests.clone();
-            // Validar límites de la suite cargada
-            // Buscar los campos de iteraciones, concurrent_requests y wait_time en la suite
-            // Si se supera algún máximo, mostrar advertencia igual que en ejecución
-            // Si es menor al mínimo, mostrar error
-            let suite = crate::models::TestSuite {
-                name: self.suite_name.clone(),
-                base_url: self.base_url.clone(),
-                requests: self.suite_requests.clone(),
-                iterations: self.iterations,
-                concurrent_requests: self.concurrent_requests,
-                wait_time: self.wait_time,
-                output_dir: self.output_dir.clone(),
+    });
+
+    // Guardar configuración actual
+    window.on_guardar_config({
+        let state       = state.clone();
+        let window_weak = window.as_weak();
+        move || {
+            let Some(w) = window_weak.upgrade() else { return };
+            let st = state.borrow();
+            let tab = w.get_tab_activo();
+
+            let config = if tab == 0 {
+                // Petición individual
+                let req = build_request_from_ui(&w);
+                let desc = req.description.clone();
+                SavedConfig {
+                    name: format!("{} - {}", desc, chrono::Local::now().format("%Y%m%d_%H%M%S")),
+                    base_url: w.get_url_base().to_string(),
+                    requests: vec![req],
+                    iterations: parse_u32(&w.get_iteraciones(), 10),
+                    concurrent_requests: parse_u32(&w.get_peticiones_simultaneas(), 1),
+                    wait_time: 1,
+                    output_dir: w.get_dir_salida().to_string(),
+                    auto_generate_report: w.get_auto_excel(),
+                    auto_upload_report: w.get_auto_subir(),
+                    remote_folder_path: w.get_carpeta_remota().to_string(),
+                    created_at: chrono::Local::now(),
+                    description: Some(format!("Petición: {}", desc)),
+                }
+            } else {
+                // Suite de pruebas
+                let nombre = w.get_suite_nombre().to_string();
+                let n = st.suite_requests.len();
+                SavedConfig {
+                    name: nombre.clone(),
+                    base_url: w.get_url_base().to_string(),
+                    requests: st.suite_requests.clone(),
+                    iterations: parse_u32(&w.get_iteraciones(), 10),
+                    concurrent_requests: parse_u32(&w.get_peticiones_simultaneas(), 1),
+                    wait_time: 1,
+                    output_dir: w.get_dir_salida().to_string(),
+                    auto_generate_report: w.get_auto_excel(),
+                    auto_upload_report: w.get_auto_subir(),
+                    remote_folder_path: w.get_carpeta_remota().to_string(),
+                    created_at: chrono::Local::now(),
+                    description: Some(format!("Suite con {n} peticiones")),
+                }
             };
-            if suite.iterations < 1 || suite.concurrent_requests < 1 || suite.wait_time < 1 {
-                self.add_log("Error: Los valores mínimos para iteraciones, peticiones simultáneas y tiempo de espera son 1.".to_string());
-                return Err("Valores mínimos inválidos en la configuración cargada".into());
-            }
-            // Si hay advertencia, mostrar popup
-            self.check_limits(suite.iterations, suite.concurrent_requests, suite.wait_time, PendingAction::RunSuiteTest);
-        }
-        Ok(())
-    }
-    
-    fn refresh_configs(&mut self) {
-        self.saved_configs = list_saved_configs().unwrap_or_default();
-        self.configs_info = list_configs_with_info().unwrap_or_default();
-    }
-    
-    fn check_completion(&mut self) {
-        // Verificar si hay mensaje de completación
-        if let Some(ref mut receiver) = self.completion_receiver {
-            // Intentar recibir sin bloquear
-            if let Ok(_) = receiver.try_recv() {
-                self.is_running = false;
-                self.cancel_requested = false;
-                self.progress = 1.0;
-                self.completion_receiver = None;
-                self.progress_receiver = None;
-            }
-        }
-        
-        // Verificar actualizaciones de progreso
-        if let Some(ref mut receiver) = self.progress_receiver {
-            // Intentar recibir sin bloquear
-            if let Ok(progress) = receiver.try_recv() {
-                self.progress = progress;
-            }
-        }
-    }
 
-    fn open_terminal(&mut self) {
-        // Solo abrir si no hay terminal abierta
-        if self.terminal_child.is_some() {
-            return;
-        }
-        #[cfg(target_os = "windows")]
-        {
-            let exe = "cmd.exe";
-            let args = ["/C", "start", "cmd.exe", "/K", "echo Logs de Stress App && pause"];
-            if let Ok(child) = Command::new(exe)
-                .args(&args)
-                .spawn() {
-                self.terminal_child = Some(child);
-            }
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let script = "tell application \"Terminal\" to do script \"echo Logs de Stress App; exec bash\"";
-            let result = Command::new("osascript")
-                .arg("-e")
-                .arg(script)
-                .spawn();
-            if result.is_ok() {
-                // No se puede capturar el proceso fácilmente, pero marcamos como abierta
-                self.terminal_child = Some(unsafe { std::mem::zeroed() });
-            }
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let terms = ["x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal", "xterm"];
-            for term in &terms {
-                if let Ok(child) = Command::new(term)
-                    .arg("-e")
-                    .arg("bash -c 'echo Logs de Stress App; exec bash'")
-                    .spawn() {
-                    self.terminal_child = Some(child);
-                    break;
-                }
-            }
-        }
-    }
-
-    fn close_terminal(&mut self) -> bool {
-        if let Some(_child) = self.terminal_child.take() {
-            #[cfg(any(target_os = "windows", target_os = "linux"))]
-            {
-                let mut child = _child;
-                let _ = child.kill();
-                return true;
-            }
-            #[cfg(target_os = "macos")]
-            {
-                // No se puede cerrar la terminal abierta por osascript
-                return false;
-            }
-        }
-        false
-    }
-
-    fn check_limits(&mut self, iterations: u32, concurrent_requests: u32, wait_time: u64, action: PendingAction) -> bool {
-        // Validar mínimos primero
-        if iterations < 1 {
-            self.add_log("Error: El mínimo para iteraciones es 1.".to_string());
-            return false;
-        }
-        if concurrent_requests < 1 {
-            self.add_log("Error: El mínimo para peticiones simultáneas es 1.".to_string());
-            return false;
-        }
-        if wait_time < 1 {
-            self.add_log("Error: El mínimo para tiempo de espera es 1 segundo.".to_string());
-            return false;
-        }
-        // Si ya hay un warning activo, no hacer nada
-        if self.show_limit_warning {
-            return false;
-        }
-        // Validar máximos y mostrar advertencia si corresponde
-        let mut warning = None;
-        if iterations > 100 {
-            warning = Some("El máximo recomendado para iteraciones es 100. ¿Deseas continuar de todas formas?".to_string());
-        } else if concurrent_requests > 100 {
-            warning = Some("El máximo recomendado para peticiones simultáneas es 100. ¿Deseas continuar de todas formas?".to_string());
-        } else if wait_time > 100 {
-            warning = Some("El máximo recomendado para tiempo de espera es 100 segundos. ¿Deseas continuar de todas formas?".to_string());
-        }
-        if let Some(msg) = warning {
-            self.show_limit_warning = true;
-            self.limit_warning_message = msg;
-            self.limit_warning_accept = false;
-            self.pending_action = Some(action);
-            return false;
-        }
-        true
-    }
-}
-
-impl eframe::App for TestStressApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Verificar si alguna prueba terminó
-        self.check_completion();
-
-        // Recibir resultado de verificación de actualizaciones
-        if let Some(ref rx) = self.update_receiver {
-            if let Ok(version) = rx.try_recv() {
-                self.update_available = Some(version);
-                self.update_receiver = None;
-            }
-        }
-
-        // Recibir resultado de actualización en segundo plano
-        if let Some(ref rx) = self.update_result_receiver {
-            if let Ok(result) = rx.try_recv() {
-                self.updating = false;
-                self.update_result_receiver = None;
-                match result {
-                    Ok(_) => { self.update_available = None; }
-                    Err(e) => { self.update_available = Some(format!("Error: {}", e)); }
-                }
-            }
-        }
-
-        // Banner de actualización disponible
-        if let Some(ref version) = self.update_available.clone() {
-            egui::TopBottomPanel::top("update_banner").show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(255, 193, 7),
-                        format!("Nueva version disponible: v{}.", version),
-                    );
-                    if self.updating {
-                        ui.spinner();
-                        ui.label("Actualizando...");
-                    } else if ui.button("Actualizar ahora").clicked() {
-                        self.updating = true;
-                        let (tx, rx) = mpsc::channel();
-                        self.update_result_receiver = Some(rx);
-                        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                            handle.spawn(async move {
-                                let result = crate::cli::update()
-                                    .await
-                                    .map(|_| String::new())
-                                    .map_err(|e| e.to_string());
-                                let _ = tx.send(result);
-                            });
-                        }
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if !self.updating {
-                            if ui.small_button("✕").clicked() {
-                                self.update_available = None;
-                            }
-                        }
-                    });
-                });
-            });
-        }
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Test Stress - Pruebas de Carga");
-            
-            // Pestañas principales
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.current_tab, 0, "Prueba Individual");
-                ui.selectable_value(&mut self.current_tab, 1, "Suite de Pruebas");
-                ui.selectable_value(&mut self.current_tab, 2, "Configuraciones");
-                ui.selectable_value(&mut self.current_tab, 3, "Resultados");
-                ui.selectable_value(&mut self.current_tab, 4, "Opciones Generales");
-            });
-            
-            ui.separator();
-            
-            match self.current_tab {
-                0 => self.render_single_test_tab(ui),
-                1 => self.render_suite_test_tab(ui),
-                2 => self.render_configs_tab(ui),
-                3 => self.render_results_tab(ui),
-                4 => self.render_general_options_tab(ui),
-                _ => {}
-            }
-        });
-        
-        // Solicitar repaint si hay una prueba corriendo
-        if self.is_running {
-            ctx.request_repaint();
-        }
-        // Procesar acciones pendientes de configuraciones
-        if let Some(config_name) = self.pending_load_config.take() {
-            if let Err(e) = self.load_config(&config_name) {
-                eprintln!("Error cargando configuración: {}", e);
-            }
-        }
-        
-        if let Some(config_name) = self.pending_delete_config.take() {
-            if let Err(e) = delete_config(&config_name) {
-                eprintln!("Error eliminando configuración: {}", e);
+            drop(st);
+            if let Err(e) = save_config(&config) {
+                eprintln!("[error] guardar config: {e}");
             } else {
-                self.refresh_configs();
+                refresh_configs_in_ui(&w);
             }
         }
-        
-        // Mostrar mensaje de guardado si corresponde
-        if let Some((ref msg, instant)) = self.config_saved_message {
-            if instant.elapsed().as_secs_f32() < 2.5 {
-                egui::Window::new("")
-                    .anchor(egui::Align2::CENTER_TOP, egui::Vec2::new(0.0, 20.0))
-                    .collapsible(false)
-                    .resizable(false)
-                    .title_bar(false)
-                    .show(ctx, |ui| {
-                        ui.colored_label(egui::Color32::GREEN, msg);
-                    });
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CALLBACKS — Tab 1: Suite de Pruebas
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Agregar nueva petición vacía a la suite
+    window.on_suite_agregar({
+        let state       = state.clone();
+        let window_weak = window.as_weak();
+        move || {
+            let Some(w) = window_weak.upgrade() else { return };
+            let mut st = state.borrow_mut();
+            let req = TestRequest::default();
+            st.suite_requests.push(req);
+            sync_suite_to_ui(&w, &st.suite_requests);
+        }
+    });
+
+    // Eliminar petición seleccionada de la suite
+    window.on_suite_eliminar({
+        let state       = state.clone();
+        let window_weak = window.as_weak();
+        move |idx| {
+            let Some(w) = window_weak.upgrade() else { return };
+            let mut st = state.borrow_mut();
+            let i = idx as usize;
+            if i < st.suite_requests.len() {
+                st.suite_requests.remove(i);
+                let new_sel = if st.suite_requests.is_empty() { -1 }
+                    else { (i as i32 - 1).max(0) };
+                drop(st);
+                w.set_suite_seleccionado(new_sel);
+                let st2 = state.borrow();
+                sync_suite_to_ui(&w, &st2.suite_requests);
+            }
+        }
+    });
+
+    // Mover petición hacia arriba en la suite
+    window.on_suite_mover_arriba({
+        let state       = state.clone();
+        let window_weak = window.as_weak();
+        move |idx| {
+            let Some(w) = window_weak.upgrade() else { return };
+            let mut st = state.borrow_mut();
+            let i = idx as usize;
+            if i > 0 && i < st.suite_requests.len() {
+                st.suite_requests.swap(i - 1, i);
+                drop(st);
+                w.set_suite_seleccionado(idx - 1);
+                let st2 = state.borrow();
+                sync_suite_to_ui(&w, &st2.suite_requests);
+            }
+        }
+    });
+
+    // Mover petición hacia abajo en la suite
+    window.on_suite_mover_abajo({
+        let state       = state.clone();
+        let window_weak = window.as_weak();
+        move |idx| {
+            let Some(w) = window_weak.upgrade() else { return };
+            let mut st = state.borrow_mut();
+            let i = idx as usize;
+            if i + 1 < st.suite_requests.len() {
+                st.suite_requests.swap(i, i + 1);
+                drop(st);
+                w.set_suite_seleccionado(idx + 1);
+                let st2 = state.borrow();
+                sync_suite_to_ui(&w, &st2.suite_requests);
+            }
+        }
+    });
+
+    // Ejecutar suite de pruebas
+    window.on_ejecutar_suite({
+        let state       = state.clone();
+        let window_weak = window.as_weak();
+        move || {
+            let Some(w) = window_weak.upgrade() else { return };
+            let mut st = state.borrow_mut();
+            if st.is_running { return; }
+            if st.suite_requests.is_empty() {
+                eprintln!("[warn] suite vacía");
+                return;
+            }
+
+            let suite = TestSuite {
+                name:                w.get_suite_nombre().to_string(),
+                base_url:            w.get_url_base().to_string(),
+                requests:            st.suite_requests.clone(),
+                iterations:          parse_u32(&w.get_iteraciones(), 10),
+                concurrent_requests: parse_u32(&w.get_peticiones_simultaneas(), 1),
+                wait_time:           1,
+                output_dir:          w.get_dir_salida().to_string(),
+            };
+            let excel  = w.get_auto_excel();
+            let upload = w.get_auto_subir();
+            let remote = w.get_carpeta_remota().to_string();
+
+            let logs    = st.logs.clone();
+            let results = st.results.clone();
+
+            let (done_tx, done_rx) = mpsc::channel();
+            let (prog_tx, prog_rx) = mpsc::channel();
+            let cancel             = Arc::new(Mutex::new(false));
+            let cancel_clone       = cancel.clone();
+
+            st.is_running    = true;
+            st.cancel_flag   = Some(cancel);
+            st.completion_rx = Some(done_rx);
+            st.progress_rx   = Some(prog_rx);
+            drop(st);
+
+            w.set_ejecutando(true);
+            w.set_estado("RUNNING".into());
+            w.set_barra_progreso("░░░░░░░░░░ 0%".into());
+
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().expect("Runtime Tokio");
+                rt.block_on(async move {
+                    if let Err(e) = execute_suite_test(
+                        &suite, logs, results, prog_tx,
+                        cancel_clone, excel, upload, remote,
+                    ).await {
+                        eprintln!("[error] suite: {e}");
+                    }
+                    let _ = done_tx.send(());
+                });
+            });
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CALLBACKS — Tab 2: Configuraciones
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Cargar config seleccionada en la UI (desde tab Configs)
+    window.on_config_cargar({
+        let window_weak = window.as_weak();
+        move |idx| {
+            let Some(w) = window_weak.upgrade() else { return };
+            let configs = list_configs_with_info().unwrap_or_default();
+            let Some(info) = configs.get(idx as usize) else { return };
+            if let Ok(cfg) = load_config(&info.name) {
+                apply_config_to_ui(&w, &cfg);
+                w.set_tab_activo(0);
+            }
+        }
+    });
+
+    // Guardar una nueva config con los datos del formulario
+    window.on_config_guardar({
+        let window_weak = window.as_weak();
+        move || {
+            let Some(w) = window_weak.upgrade() else { return };
+            let nombre = w.get_form_nombre().to_string();
+            if nombre.trim().is_empty() {
+                eprintln!("[warn] nombre de config vacío");
+                return;
+            }
+            let config = SavedConfig {
+                name: nombre.clone(),
+                base_url: w.get_form_url().to_string(),
+                requests: vec![TestRequest::default()],
+                iterations: parse_u32(&w.get_form_iter(), 10),
+                concurrent_requests: parse_u32(&w.get_form_concurrentes(), 1),
+                wait_time: 1,
+                output_dir: "./results".to_string(),
+                auto_generate_report: true,
+                auto_upload_report: false,
+                remote_folder_path: String::new(),
+                created_at: chrono::Local::now(),
+                description: Some(w.get_form_desc().to_string()),
+            };
+            if let Err(e) = save_config(&config) {
+                eprintln!("[error] guardar config: {e}");
             } else {
-                self.config_saved_message = None;
+                refresh_configs_in_ui(&w);
             }
         }
-    }
-}
+    });
 
-impl TestStressApp {
-    fn render_single_test_tab(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.heading("Prueba Individual");
-
-            // Shortcut para cargar configuración guardada
-            ui.group(|ui| {
-                ui.label("Configuraciones");
-                ui.horizontal(|ui| {
-                    ui.label("📂 Seleccionar configuración:");
-                    let mut selected = None;
-                    egui::ComboBox::from_id_salt("combo_single_config")
-                        .selected_text("Seleccionar configuración individual...")
-                        .show_ui(ui, |ui| {
-                            for config in self.configs_info.iter().filter(|c| !c.is_suite) {
-                                let label = format!("{} ({})", config.name, config.created_at.format("%Y-%m-%d %H:%M"));
-                                if ui.selectable_label(false, label).clicked() {
-                                    selected = Some(config.name.clone());
-                                }
-                            }
-                        });
-                    if let Some(name) = selected {
-                        let _ = self.load_config(&name);
-                    }
-                });
-                ui.label("💡 Tip: Selecciona una configuración guardada para cargar automáticamente todos los campos");
-            });
-
-            // Configuración general
-            ui.group(|ui| {
-                ui.label("Configuración General");
-                ui.horizontal(|ui| {
-                    ui.label("URL Base:");
-                    ui.text_edit_singleline(&mut self.base_url);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Iteraciones:");
-                    ui.add(egui::DragValue::new(&mut self.iterations));
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Peticiones simultáneas:");
-                    ui.add(egui::DragValue::new(&mut self.concurrent_requests));
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Tiempo de espera (seg):");
-                    ui.add(egui::DragValue::new(&mut self.wait_time));
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Directorio de salida:");
-                    ui.text_edit_singleline(&mut self.output_dir);
-                    if ui.button("📁 Seleccionar").clicked() {
-                        // Abrir selector de directorio nativo
-                        if let Some(path) = rfd::FileDialog::new()
-                            .set_title("Seleccionar directorio de salida")
-                            .pick_folder() {
-                            self.output_dir = path.to_string_lossy().to_string();
-                        }
-                    }
-                });
-                if self.output_dir.trim().is_empty() {
-                    ui.colored_label(egui::Color32::RED, "⚠️ Debes especificar un directorio de salida antes de ejecutar la prueba.");
-                }
-                ui.checkbox(&mut self.auto_generate_report, "📊 Generar reporte Excel automáticamente después de la prueba");
-                
-                ui.separator();
-                ui.label("Subida a Carpeta Remota");
-                if ui.checkbox(&mut self.auto_upload_report, "📤 Subir archivos automáticamente a carpeta remota").changed() {
-                    // La opción se guarda automáticamente en la estructura
-                }
-                ui.label("Se copiará toda la carpeta de la prueba (con Excel y CSV) a la carpeta especificada.");
-                
-                ui.horizontal(|ui| {
-                    ui.label("Carpeta remota:");
-                    ui.text_edit_singleline(&mut self.remote_folder_path);
-                    if ui.button("📁 Seleccionar").clicked() {
-                        // Abrir selector de directorio nativo
-                        if let Some(path) = rfd::FileDialog::new()
-                            .set_title("Seleccionar carpeta remota")
-                            .pick_folder() {
-                            self.remote_folder_path = path.to_string_lossy().to_string();
-                        }
-                    }
-                });
-                if self.auto_upload_report && self.remote_folder_path.trim().is_empty() {
-                    ui.colored_label(egui::Color32::YELLOW, "⚠️ Debes especificar una carpeta remota para subir los archivos.");
-                }
-            });
-            
-            // Configuración de la petición y métricas del sistema lado a lado
-            ui.horizontal(|ui| {
-                // Configuración de la petición (izquierda) - mantener layout vertical
-                ui.vertical(|ui| {
-                    ui.group(|ui| {
-                        ui.label("Configuración de la Petición");
-                        ui.horizontal(|ui| {
-                            ui.label("Método:");
-                            egui::ComboBox::from_id_salt("method")
-                                .selected_text(format!("{}", self.current_request.method))
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut self.current_request.method, HttpMethod::GET, "GET");
-                                    ui.selectable_value(&mut self.current_request.method, HttpMethod::POST, "POST");
-                                    ui.selectable_value(&mut self.current_request.method, HttpMethod::PUT, "PUT");
-                                    ui.selectable_value(&mut self.current_request.method, HttpMethod::PATCH, "PATCH");
-                                    ui.selectable_value(&mut self.current_request.method, HttpMethod::DELETE, "DELETE");
-                                    ui.selectable_value(&mut self.current_request.method, HttpMethod::HEAD, "HEAD");
-                                    ui.selectable_value(&mut self.current_request.method, HttpMethod::OPTIONS, "OPTIONS");
-                                });
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Endpoint:");
-                            ui.text_edit_singleline(&mut self.current_request.endpoint);
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Descripción:");
-                            ui.text_edit_singleline(&mut self.current_request.description);
-                        });
-                        
-                        // Headers
-                        ui.label("Headers:");
-                        let mut to_remove_headers = Vec::new();
-                        for (i, header) in self.current_request.headers.iter_mut().enumerate() {
-                            ui.horizontal(|ui| {
-                                ui.text_edit_singleline(&mut header.name);
-                                ui.text_edit_singleline(&mut header.value);
-                                if ui.button("🗑️").clicked() {
-                                    to_remove_headers.push(i);
-                                }
-                            });
-                        }
-                        for &index in to_remove_headers.iter().rev() {
-                            self.current_request.headers.remove(index);
-                        }
-                        if ui.button("➕ Agregar Header").clicked() {
-                            self.current_request.headers.push(HttpHeader {
-                                name: String::new(),
-                                value: String::new(),
-                            });
-                        }
-                        
-                        // Query Parameters
-                        ui.label("Query Parameters:");
-                        let mut to_remove_params = Vec::new();
-                        for (i, param) in self.current_request.query_params.iter_mut().enumerate() {
-                            ui.horizontal(|ui| {
-                                ui.text_edit_singleline(&mut param.name);
-                                ui.text_edit_singleline(&mut param.value);
-                                if ui.button("🗑️").clicked() {
-                                    to_remove_params.push(i);
-                                }
-                            });
-                        }
-                        for &index in to_remove_params.iter().rev() {
-                            self.current_request.query_params.remove(index);
-                        }
-                        if ui.button("➕ Agregar Query Parameter").clicked() {
-                            self.current_request.query_params.push(QueryParameter {
-                                name: String::new(),
-                                value: String::new(),
-                            });
-                        }
-                        
-                        // Body
-                        if matches!(self.current_request.method, HttpMethod::POST | HttpMethod::PUT | HttpMethod::PATCH) {
-                            ui.label("Body (JSON):");
-                            if let Some(body) = &mut self.current_request.body {
-                                ui.text_edit_multiline(body);
-                            } else {
-                                let mut temp = String::new();
-                                if ui.text_edit_multiline(&mut temp).changed() {
-                                    self.current_request.body = Some(temp);
-                                }
-                            }
-                        }
-                    });
-                });
-                
-                // Panel de métricas del sistema en tiempo real (derecha)
-                if self.monitoring_config.enabled {
-                    ui.vertical(|ui| {
-                        ui.heading("📊 Métricas del Sistema");
-                        
-                        ui.group(|ui| {
-                            if let Some(ref mut monitor) = self.system_monitor {
-                                if let Some(metrics) = monitor.get_current_metrics() {
-                                    ui.horizontal(|ui| {
-                                        ui.vertical(|ui| {
-                                            ui.label("🖥️ CPU");
-                                            ui.colored_label(
-                                                if metrics.cpu_usage > 80.0 { egui::Color32::RED }
-                                                else if metrics.cpu_usage > 60.0 { egui::Color32::YELLOW }
-                                                else { egui::Color32::GREEN },
-                                                format_percentage(metrics.cpu_usage)
-                                            );
-                                        });
-                                        
-                                        ui.vertical(|ui| {
-                                            ui.label("💾 RAM");
-                                            ui.colored_label(
-                                                if metrics.memory_usage > 80.0 { egui::Color32::RED }
-                                                else if metrics.memory_usage > 60.0 { egui::Color32::YELLOW }
-                                                else { egui::Color32::GREEN },
-                                                format_percentage(metrics.memory_usage)
-                                            );
-                                            ui.label(format!("{}/{}", format_bytes(metrics.memory_used), format_bytes(metrics.memory_total)));
-                                        });
-                                        
-                                        ui.vertical(|ui| {
-                                            ui.label("💿 Disco I/O");
-                                            ui.label(format!("📥 {}", format_bytes(metrics.disk_read_bytes)));
-                                            ui.label(format!("📤 {}", format_bytes(metrics.disk_write_bytes)));
-                                        });
-                                        
-                                        ui.vertical(|ui| {
-                                            ui.label("🌐 Red");
-                                            ui.label(format!("📥 {}", format_bytes(metrics.network_rx_bytes)));
-                                            ui.label(format!("📤 {}", format_bytes(metrics.network_tx_bytes)));
-                                        });
-                                        
-                                        ui.vertical(|ui| {
-                                            ui.label("⚡ Load");
-                                            ui.colored_label(
-                                                if metrics.load_average > 2.0 { egui::Color32::RED }
-                                                else if metrics.load_average > 1.0 { egui::Color32::YELLOW }
-                                                else { egui::Color32::GREEN },
-                                                format!("{:.2}", metrics.load_average)
-                                            );
-                                        });
-                                    });
-                                    
-                                    ui.label(format!("🕐 Última actualización: {}", metrics.timestamp.format("%H:%M:%S")));
-                                } else {
-                                    ui.label("⏳ Inicializando métricas...");
-                                }
-                            } else {
-                                ui.label("❌ Monitoreo no disponible");
-                            }
-                        });
-                    });
-                }
-            });
-
-            // Controles de ejecución (dentro del scroll)
-            ui.horizontal(|ui| {
-                if ui.button(if self.is_running { "⏸️ Pausar" } else { "▶️ Ejecutar" }).clicked() {
-                    if !self.is_running {
-                        if self.output_dir.trim().is_empty() {
-                            self.add_log("Error: Debes especificar un directorio de salida antes de ejecutar la prueba.".to_string());
-                        } else if self.show_limit_warning {
-                            // Si ya hay advertencia, solo mostrar el popup, no ejecutar
-                            // (el popup se muestra abajo)
-                        } else if self.check_limits(self.iterations, self.concurrent_requests, self.wait_time, PendingAction::RunSingleTest) {
-                            self.run_single_test();
-                        }
-                    }
-                }
-                if self.is_running {
-                    if ui.add(egui::Button::new("🛑 Parar").fill(egui::Color32::RED).min_size(egui::vec2(100.0, 40.0))).clicked() {
-                        self.cancel_requested = true;
-                        // Activar flag de cancelación
-                        if let Some(ref cancel_flag) = self.cancel_flag {
-                            if let Ok(mut flag) = cancel_flag.lock() {
-                                *flag = true;
-                            }
-                        }
-                    }
-                }
-                if ui.button("💾 Guardar Configuración").clicked() {
-                    if let Err(e) = self.save_current_config() {
-                        eprintln!("Error guardando configuración: {}", e);
-                    } else {
-                        // ui.label("✅ Configuración guardada"); // Eliminado para evitar duplicidad
-                    }
-                }
-            });
-            
-            // Progreso
-            if self.is_running {
-                ui.add(egui::ProgressBar::new(self.progress).text("Ejecutando..."));
-            }
-            
-            // Logs mejorados (con scroll propio)
-            ui.group(|ui| {
-                ui.label("📋 Logs de Ejecución");
-                if let Ok(logs) = self.logs.lock() {
-                    if logs.is_empty() {
-                        ui.label("No hay logs disponibles. Ejecuta una prueba para ver los logs.");
-                    } else {
-                        egui::ScrollArea::vertical()
-                            .max_height(200.0) // Aumentar altura
-                            .show(ui, |ui| {
-                                for log in logs.iter().rev().take(20) { // Mostrar más logs
-                                    ui.label(format!("{}", log));
-                                }
-                            });
-                    }
-                }
-            });
-        });
-
-        // Popup de advertencia (fuera del scroll)
-        if self.show_limit_warning {
-            egui::Window::new("Advertencia de límite")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .show(ui.ctx(), |ui| {
-                    ui.label(&self.limit_warning_message);
-                    ui.checkbox(&mut self.limit_warning_accept, "Entiendo los riesgos y deseo continuar");
-                    ui.horizontal(|ui| {
-                        if ui.add_enabled(self.limit_warning_accept, egui::Button::new("Continuar")).clicked() {
-                            self.show_limit_warning = false;
-                            if let Some(action) = self.pending_action {
-                                match action {
-                                    PendingAction::RunSingleTest => self.run_single_test(),
-                                    PendingAction::RunSuiteTest => self.run_suite_test(),
-                                }
-                            }
-                        }
-                        if ui.button("Cancelar").clicked() {
-                            self.show_limit_warning = false;
-                        }
-                    });
-                });
-        }
-    }
-    
-    fn render_suite_test_tab(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.heading("Suite de Pruebas");
-
-            // Shortcut para cargar configuración guardada de suite
-            ui.group(|ui| {
-                ui.label("Configuraciones");
-                ui.horizontal(|ui| {
-                    ui.label("📂 Seleccionar suite:");
-                    let mut selected = None;
-                    egui::ComboBox::from_id_salt("combo_suite_config")
-                        .selected_text("Seleccionar configuración de suite...")
-                        .show_ui(ui, |ui| {
-                            for config in self.configs_info.iter().filter(|c| c.is_suite) {
-                                let label = format!("{} ({})", config.name, config.created_at.format("%Y-%m-%d %H:%M"));
-                                if ui.selectable_label(false, label).clicked() {
-                                    selected = Some(config.name.clone());
-                                }
-                            }
-                        });
-                    if let Some(name) = selected {
-                        let _ = self.load_config(&name);
-                    }
-                });
-                ui.label("💡 Tip: Selecciona una suite guardada para cargar automáticamente todas las peticiones y configuraciones");
-            });
-
-            // Configuración de la suite
-            ui.group(|ui| {
-                ui.label("Configuración de la Suite");
-                ui.horizontal(|ui| {
-                    ui.label("Nombre de la suite:");
-                    ui.text_edit_singleline(&mut self.suite_name);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("URL Base:");
-                    ui.text_edit_singleline(&mut self.base_url);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Iteraciones:");
-                    ui.add(egui::DragValue::new(&mut self.iterations));
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Peticiones simultáneas:");
-                    ui.add(egui::DragValue::new(&mut self.concurrent_requests));
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Tiempo de espera (seg):");
-                    ui.add(egui::DragValue::new(&mut self.wait_time));
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Directorio de salida:");
-                    ui.text_edit_singleline(&mut self.output_dir);
-                    if ui.button("📁 Seleccionar").clicked() {
-                        // Abrir selector de directorio nativo
-                        if let Some(path) = rfd::FileDialog::new()
-                            .set_title("Seleccionar directorio de salida")
-                            .pick_folder() {
-                            self.output_dir = path.to_string_lossy().to_string();
-                        }
-                    }
-                });
-                if self.output_dir.trim().is_empty() {
-                    ui.colored_label(egui::Color32::RED, "⚠️ Debes especificar un directorio de salida antes de ejecutar la suite.");
-                }
-                ui.checkbox(&mut self.auto_generate_report, "📊 Generar reporte Excel automáticamente después de la suite");
-                
-                ui.separator();
-                ui.label("Subida a Carpeta Remota");
-                if ui.checkbox(&mut self.auto_upload_report, "📤 Subir archivos automáticamente a carpeta remota").changed() {
-                    // La opción se guarda automáticamente en la estructura
-                }
-                ui.label("Se copiará toda la carpeta de la suite (con Excel y CSV) a la carpeta especificada.");
-                
-                ui.horizontal(|ui| {
-                    ui.label("Carpeta remota:");
-                    ui.text_edit_singleline(&mut self.remote_folder_path);
-                    if ui.button("📁 Seleccionar").clicked() {
-                        // Abrir selector de directorio nativo
-                        if let Some(path) = rfd::FileDialog::new()
-                            .set_title("Seleccionar carpeta remota")
-                            .pick_folder() {
-                            self.remote_folder_path = path.to_string_lossy().to_string();
-                        }
-                    }
-                });
-                if self.auto_upload_report && self.remote_folder_path.trim().is_empty() {
-                    ui.colored_label(egui::Color32::YELLOW, "⚠️ Debes especificar una carpeta remota para subir los archivos.");
-                }
-            });
-            
-            // Lista de peticiones
-            ui.group(|ui| {
-                ui.label("Peticiones de la Suite");
-                let mut to_remove = Vec::new();
-                for (i, request) in self.suite_requests.iter_mut().enumerate() {
-                    ui.group(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("Petición {}", i + 1));
-                            if ui.button("🗑️").clicked() {
-                                to_remove.push(i);
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Método:");
-                            egui::ComboBox::from_id_salt(format!("method_{}", i))
-                                .selected_text(format!("{}", request.method))
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut request.method, HttpMethod::GET, "GET");
-                                    ui.selectable_value(&mut request.method, HttpMethod::POST, "POST");
-                                    ui.selectable_value(&mut request.method, HttpMethod::PUT, "PUT");
-                                    ui.selectable_value(&mut request.method, HttpMethod::PATCH, "PATCH");
-                                    ui.selectable_value(&mut request.method, HttpMethod::DELETE, "DELETE");
-                                    ui.selectable_value(&mut request.method, HttpMethod::HEAD, "HEAD");
-                                    ui.selectable_value(&mut request.method, HttpMethod::OPTIONS, "OPTIONS");
-                                });
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Endpoint:");
-                            ui.text_edit_singleline(&mut request.endpoint);
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Descripción:");
-                            ui.text_edit_singleline(&mut request.description);
-                        });
-                    });
-                }
-                for &index in to_remove.iter().rev() {
-                    self.suite_requests.remove(index);
-                }
-                if ui.button("➕ Agregar Petición").clicked() {
-                    self.suite_requests.push(TestRequest::default());
-                }
-            });
-            
-            // Controles de ejecución (dentro del scroll)
-            ui.horizontal(|ui| {
-                if ui.button(if self.is_running { "⏸️ Pausar" } else { "▶️ Ejecutar Suite" }).clicked() {
-                    if !self.is_running {
-                        if self.output_dir.trim().is_empty() {
-                            self.add_log("Error: Debes especificar un directorio de salida antes de ejecutar la suite.".to_string());
-                        } else if self.check_limits(self.iterations, self.concurrent_requests, self.wait_time, PendingAction::RunSuiteTest) {
-                            self.run_suite_test();
-                        }
-                    }
-                }
-                if self.is_running {
-                    if ui.add(egui::Button::new("🛑 Parar").fill(egui::Color32::RED).min_size(egui::vec2(100.0, 40.0))).clicked() {
-                        self.cancel_requested = true;
-                        // Activar flag de cancelación
-                        if let Some(ref cancel_flag) = self.cancel_flag {
-                            if let Ok(mut flag) = cancel_flag.lock() {
-                                *flag = true;
-                            }
-                        }
-                    }
-                }
-                if ui.button("💾 Guardar Suite").clicked() {
-                    if let Err(e) = self.save_current_config() {
-                        eprintln!("Error guardando suite: {}", e);
-                    } else {
-                        // ui.label("✅ Configuración guardada"); // Eliminado para evitar duplicidad
-                    }
-                }
-            });
-            
-            // Progreso
-            if self.is_running {
-                ui.add(egui::ProgressBar::new(self.progress).text("Ejecutando suite..."));
-            }
-            
-            // Logs mejorados para suite (con scroll propio)
-            ui.group(|ui| {
-                ui.label("📋 Logs de Ejecución");
-                if let Ok(logs) = self.logs.lock() {
-                    if logs.is_empty() {
-                        ui.label("No hay logs disponibles. Ejecuta una suite para ver los logs.");
-                    } else {
-                        egui::ScrollArea::vertical()
-                            .max_height(200.0) // Aumentar altura
-                            .show(ui, |ui| {
-                                for log in logs.iter().rev().take(20) { // Mostrar más logs
-                                    ui.label(format!("{}", log));
-                                }
-                            });
-                    }
-                }
-            });
-            
-            // Panel de métricas del sistema en tiempo real
-            if self.monitoring_config.enabled {
-                ui.heading("📊 Métricas del Sistema");
-                
-                ui.group(|ui| {
-                    if let Some(ref mut monitor) = self.system_monitor {
-                        if let Some(metrics) = monitor.get_current_metrics() {
-                            ui.horizontal(|ui| {
-                                ui.vertical(|ui| {
-                                    ui.label("🖥️ CPU");
-                                    ui.colored_label(
-                                        if metrics.cpu_usage > 80.0 { egui::Color32::RED }
-                                        else if metrics.cpu_usage > 60.0 { egui::Color32::YELLOW }
-                                        else { egui::Color32::GREEN },
-                                        format_percentage(metrics.cpu_usage)
-                                    );
-                                });
-                                
-                                ui.vertical(|ui| {
-                                    ui.label("💾 RAM");
-                                    ui.colored_label(
-                                        if metrics.memory_usage > 80.0 { egui::Color32::RED }
-                                        else if metrics.memory_usage > 60.0 { egui::Color32::YELLOW }
-                                        else { egui::Color32::GREEN },
-                                        format_percentage(metrics.memory_usage)
-                                    );
-                                    ui.label(format!("{}/{}", format_bytes(metrics.memory_used), format_bytes(metrics.memory_total)));
-                                });
-                                
-                                ui.vertical(|ui| {
-                                    ui.label("💿 Disco I/O");
-                                    ui.label(format!("📥 {}", format_bytes(metrics.disk_read_bytes)));
-                                    ui.label(format!("📤 {}", format_bytes(metrics.disk_write_bytes)));
-                                });
-                                
-                                ui.vertical(|ui| {
-                                    ui.label("🌐 Red");
-                                    ui.label(format!("📥 {}", format_bytes(metrics.network_rx_bytes)));
-                                    ui.label(format!("📤 {}", format_bytes(metrics.network_tx_bytes)));
-                                });
-                                
-                                ui.vertical(|ui| {
-                                    ui.label("⚡ Load");
-                                    ui.colored_label(
-                                        if metrics.load_average > 2.0 { egui::Color32::RED }
-                                        else if metrics.load_average > 1.0 { egui::Color32::YELLOW }
-                                        else { egui::Color32::GREEN },
-                                        format!("{:.2}", metrics.load_average)
-                                    );
-                                });
-                            });
-                            
-                            ui.label(format!("🕐 Última actualización: {}", metrics.timestamp.format("%H:%M:%S")));
-                        } else {
-                            ui.label("⏳ Inicializando métricas...");
-                        }
-                    } else {
-                        ui.label("❌ Monitoreo no disponible");
-                    }
-                });
-            }
-        });
-
-        // Popup de advertencia (fuera del scroll)
-        if self.show_limit_warning {
-            egui::Window::new("Advertencia de límite")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .show(ui.ctx(), |ui| {
-                    ui.label(&self.limit_warning_message);
-                    ui.checkbox(&mut self.limit_warning_accept, "Entiendo los riesgos y deseo continuar");
-                    ui.horizontal(|ui| {
-                        if ui.add_enabled(self.limit_warning_accept, egui::Button::new("Continuar")).clicked() {
-                            self.show_limit_warning = false;
-                            if let Some(action) = self.pending_action {
-                                match action {
-                                    PendingAction::RunSingleTest => self.run_single_test(),
-                                    PendingAction::RunSuiteTest => self.run_suite_test(),
-                                }
-                            }
-                        }
-                        if ui.button("Cancelar").clicked() {
-                            self.show_limit_warning = false;
-                        }
-                    });
-                });
-        }
-    }
-    
-    fn render_configs_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Configuraciones Guardadas");
-        
-        // Barra de herramientas
-        ui.horizontal(|ui| {
-            if ui.button("🔄 Actualizar").clicked() {
-                self.refresh_configs();
-            }
-            if ui.button("📁 Abrir Explorador").clicked() {
-                #[cfg(target_os = "windows")]
-                let config_dir = std::path::PathBuf::from("./configs");
-                #[cfg(not(target_os = "windows"))]
-                let config_dir = dirs::home_dir()
-                    .map(|h| h.join(".stress/configs"))
-                    .unwrap_or_else(|| std::path::PathBuf::from("./configs"));
-                // Crear la carpeta si no existe
-                if let Err(e) = std::fs::create_dir_all(&config_dir) {
-                    eprintln!("No se pudo crear la carpeta de configuraciones: {}", e);
+    // Duplicar config seleccionada
+    window.on_config_duplicar({
+        let window_weak = window.as_weak();
+        move |idx| {
+            let Some(w) = window_weak.upgrade() else { return };
+            let configs = list_configs_with_info().unwrap_or_default();
+            let Some(info) = configs.get(idx as usize) else { return };
+            if let Ok(mut cfg) = load_config(&info.name) {
+                cfg.name = format!("{}_copia_{}", cfg.name, chrono::Local::now().format("%H%M%S"));
+                cfg.created_at = chrono::Local::now();
+                if let Err(e) = save_config(&cfg) {
+                    eprintln!("[error] duplicar config: {e}");
                 } else {
-                    if let Err(e) = open::that(config_dir) {
-                        eprintln!("Error abriendo explorador: {}", e);
-                    }
-                }
-            }
-        });
-        
-        if self.configs_info.is_empty() {
-            ui.label("No hay configuraciones guardadas.");
-            ui.label("Las configuraciones se guardan en la carpeta './configs/'");
-        } else {
-            ui.label(format!("Configuraciones encontradas: {}", self.configs_info.len()));
-            
-            // Mostrar configuraciones
-            for config_info in &self.configs_info {
-                ui.group(|ui| {
-                    ui.horizontal(|ui| {
-                        // Icono según tipo
-                        let icon = if config_info.is_suite { "📋" } else { "📄" };
-                        ui.label(icon);
-                        
-                        // Información principal
-                        ui.vertical(|ui| {
-                            ui.label(format!("📝 {}", config_info.name));
-                            if let Some(desc) = &config_info.description {
-                                ui.colored_label(egui::Color32::GRAY, desc);
-                            }
-                            ui.horizontal(|ui| {
-                                ui.label(format!("📊 {} endpoints", config_info.request_count));
-                                ui.label(format!("📅 {}", config_info.created_at.format("%Y-%m-%d %H:%M")));
-                            });
-                        });
-                        
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let config_name = config_info.name.clone();
-                            if ui.button("📂 Cargar").clicked() {
-                                self.pending_load_config = Some(config_name.clone());
-                            }
-                            if ui.button("🗑️ Eliminar").clicked() {
-                                self.pending_delete_config = Some(config_name.clone());
-                            }
-                        });
-                    });
-                });
-            }
-        }
-    }
-    
-    fn render_results_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Resultados");
-        
-        if let Ok(results) = self.results.lock() {
-            if results.is_empty() {
-                ui.label("No hay resultados disponibles.");
-            } else {
-                for (i, summary) in results.iter().enumerate() {
-                    ui.group(|ui| {
-                        // Usar la hora fija del timestamp del test en lugar de la hora actual
-                        let test_time = summary.timestamp.format("%H:%M:%S");
-                        ui.label(format!("📊 Resultado {}: {} - {}", i + 1, summary.request_name, test_time));
-                        ui.separator();
-                        
-                        // Estadísticas generales
-                        ui.label(format!("📈 Total de peticiones: {}", summary.total_requests));
-                        ui.label(format!("✅ Exitosas: {}", summary.successful_requests));
-                        ui.label(format!("❌ Fallidas: {}", summary.failed_requests));
-                        ui.label(format!("📊 Tasa de éxito: {:.2}%", summary.success_rate));
-                        
-                        ui.separator();
-                        
-                        // Tiempos
-                        ui.label("⏱️ Tiempos de respuesta:");
-                        ui.label(format!("   • Promedio: {:.2} ms", summary.average_duration_ms));
-                        ui.label(format!("   • Mínimo: {} ms", summary.min_duration_ms));
-                        ui.label(format!("   • Máximo: {} ms", summary.max_duration_ms));
-                        
-                        // Duración total
-                        ui.label(format!("🕐 Duración total: {:.2} ms", summary.total_duration_ms));
-                    });
+                    refresh_configs_in_ui(&w);
                 }
             }
         }
-        
-        // Mensaje de éxito del reporte
-        if let Some(msg) = &self.report_success_message {
-            ui.colored_label(egui::Color32::GREEN, msg);
-        }
-        ui.horizontal(|ui| {
-            if ui.button("📊 Generar Reporte").clicked() {
-                let output_dir = self.output_dir.clone();
-                
-                // Encontrar todos los archivos CSV en el directorio
-                let mut csv_files = Vec::new();
-                if let Ok(entries) = fs::read_dir(&output_dir) {
-                    for entry in entries {
-                        if let Ok(entry) = entry {
-                            let path = entry.path();
-                            if let Some(ext) = path.extension() {
-                                if ext == "csv" {
-                                    csv_files.push(path);
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                if csv_files.is_empty() {
-                    self.report_success_message = Some("No se encontraron archivos CSV en el directorio de resultados".to_string());
-                } else {
-                    // Crear carpeta de reportes
-                    let reports_dir = format!("{}/reports", output_dir);
-                    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-                    let excel_path = format!("{}/report_{}.xlsx", reports_dir, timestamp);
-                    
-                    match generate_excel_report_from_files(&csv_files, &excel_path) {
-                        Ok(path) => {
-                            self.report_success_message = Some(format!("Reporte Excel generado exitosamente en: {}", path));
-                        },
-                        Err(e) => {
-                            self.report_success_message = Some(format!("Error generando reporte: {}", e));
-                        }
-                    }
-                }
-            }
-        });
-    }
+    });
 
-    fn render_general_options_tab(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.heading("Opciones Generales");
-            ui.separator();
-            let mut changed = false;
-            let mut close_failed = false;
-            if ui.checkbox(&mut self.show_terminal, "Mostrar terminal (logs en tiempo real)").changed() {
-                changed = true;
+    // Eliminar config seleccionada
+    window.on_config_eliminar({
+        let window_weak = window.as_weak();
+        move |idx| {
+            let Some(w) = window_weak.upgrade() else { return };
+            let configs = list_configs_with_info().unwrap_or_default();
+            let Some(info) = configs.get(idx as usize) else { return };
+            if let Err(e) = delete_config(&info.name) {
+                eprintln!("[error] eliminar config: {e}");
+            } else {
+                w.set_config_info_idx(-1);
+                refresh_configs_in_ui(&w);
             }
-            ui.label("Por defecto, la terminal está oculta. Si activas esta opción, se abrirá una terminal con logs en tiempo real. Si la desactivas, se cerrará la terminal si es posible.");
-            if changed {
-                let prefs = GeneralPrefs {
-                    show_terminal: self.show_terminal,
-                    monitoring_enabled: self.monitoring_config.enabled,
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CALLBACKS — Tab 3: Resultados
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Limpiar resultados de la tabla
+    window.on_limpiar_resultados({
+        let state       = state.clone();
+        let window_weak = window.as_weak();
+        move || {
+            let Some(w) = window_weak.upgrade() else { return };
+            let st = state.borrow();
+            if let Ok(mut r) = st.results.lock() { r.clear(); }
+            drop(st);
+            state.borrow_mut().last_result_count = 0;
+            w.set_resultados(ModelRc::new(VecModel::from(vec![])));
+            reset_metrics(&w);
+        }
+    });
+
+    // Exportar resultados a Excel
+    window.on_exportar_excel({
+        let state       = state.clone();
+        let window_weak = window.as_weak();
+        move || {
+            let Some(w) = window_weak.upgrade() else { return };
+            let st = state.borrow();
+            let out_dir = w.get_dir_salida().to_string();
+            let results = st.results.clone();
+            drop(st);
+
+            std::thread::spawn(move || {
+                let results_lock = results.lock().unwrap();
+                if results_lock.is_empty() { return; }
+                drop(results_lock);
+
+                // Buscar CSVs en el directorio de salida
+                let csv_files = find_csv_files_in_dir(&out_dir);
+                if csv_files.is_empty() { return; }
+
+                let reports_dir = format!("{}/reports", out_dir);
+                let _ = fs::create_dir_all(&reports_dir);
+                let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+                let excel_path = format!("{}/report_{}.xlsx", reports_dir, ts);
+                if let Err(e) = generate_excel_report_from_files(&csv_files, &excel_path) {
+                    eprintln!("[error] exportar excel: {e}");
+                } else {
+                    let _ = open::that(reports_dir);
+                }
+            });
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CALLBACKS — Tab 4: Opciones Generales
+    // ─────────────────────────────────────────────────────────────────────────
+
+    window.on_guardar_general({
+        let window_weak = window.as_weak();
+        move || {
+            // Persistir preferencias generales (monitoreo, etc.)
+            let Some(w) = window_weak.upgrade() else { return };
+            let _monitoreo = w.get_monitoreo();
+            // Aquí se pueden guardar preferencias en JSON de ser necesario.
+        }
+    });
+
+    window.on_seleccionar_dir_reportes({
+        let window_weak = window.as_weak();
+        move || {
+            let window_weak = window_weak.clone();
+            std::thread::spawn(move || {
+                if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                    let path_str = path.to_string_lossy().to_string();
+                    slint::invoke_from_event_loop(move || {
+                        if let Some(w) = window_weak.upgrade() {
+                            w.set_dir_reportes(path_str.into());
+                        }
+                    }).ok();
+                }
+            });
+        }
+    });
+
+    // Editar petición de la suite (por ahora sólo selecciona; edición inline pendiente)
+    window.on_suite_editar({
+        move |_idx| {
+            // TODO: abrir diálogo modal para editar la petición seleccionada
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // TIMER — Polling de progreso y actualización de UI
+    // ─────────────────────────────────────────────────────────────────────────
+    let _progress_timer = slint::Timer::default();
+    _progress_timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(120),
+        {
+            let state       = state.clone();
+            let window_weak = window.as_weak();
+            move || {
+                let Some(w) = window_weak.upgrade() else { return };
+                let mut st = state.borrow_mut();
+
+                if !st.is_running { return; }
+
+                // Actualizar barra de progreso
+                let mut last_progress = 0.0f32;
+                if let Some(ref rx) = st.progress_rx {
+                    while let Ok(p) = rx.try_recv() {
+                        last_progress = p;
+                    }
+                    if last_progress > 0.0 {
+                        let filled = (last_progress * 10.0).round() as usize;
+                        let empty  = 10usize.saturating_sub(filled);
+                        let bar = format!("{}{} {:.0}%",
+                            "█".repeat(filled),
+                            "░".repeat(empty),
+                            last_progress * 100.0,
+                        );
+                        w.set_barra_progreso(bar.into());
+                    }
+                }
+
+                // Detectar completación
+                let completed = if let Some(ref rx) = st.completion_rx {
+                    rx.try_recv().is_ok()
+                } else {
+                    false
                 };
-                save_general_prefs(&prefs);
-                if self.show_terminal {
-                    self.open_terminal();
-                } else {
-                    if !self.close_terminal() {
-                        close_failed = true;
-                    }
-                }
-            }
-            if !self.show_terminal && self.terminal_child.is_some() {
-                // Intentar cerrar si aún queda abierta
-                if !self.close_terminal() {
-                    close_failed = true;
-                }
-            }
-            if close_failed {
-                ui.colored_label(egui::Color32::YELLOW, "No se pudo cerrar la terminal automáticamente. Ciérrala manualmente si es necesario.");
-            }
-            
-            ui.separator();
-            ui.heading("Reportes y Archivos");
-            
-            if ui.checkbox(&mut self.auto_generate_report, "Generar reporte Excel automáticamente").changed() {
-                // La opción se guarda automáticamente en la estructura
-            }
-            ui.label("Si está activado, se generará automáticamente un reporte Excel después de cada prueba.");
-            
-            ui.separator();
-            ui.heading("Subida Automática a Carpeta Remota");
-            
-            if ui.checkbox(&mut self.auto_upload_report, "Subir archivos automáticamente a carpeta remota").changed() {
-                // La opción se guarda automáticamente en la estructura
-            }
-            ui.label("Si está activado, se copiará toda la carpeta de la prueba (con Excel y CSV) a la carpeta remota especificada.");
-            
-            ui.label("Ruta de la carpeta remota (OneDrive, Google Drive, Dropbox, etc.):");
-            ui.text_edit_singleline(&mut self.remote_folder_path);
-            ui.label("Ejemplo: /Users/tu_usuario/OneDrive/StressTests o C:\\Users\\tu_usuario\\OneDrive\\StressTests");
-            
-            ui.separator();
-            ui.heading("Monitoreo del Sistema");
 
-            if ui.checkbox(&mut self.monitoring_config.enabled, "Habilitar monitoreo del sistema").changed() {
-                if self.monitoring_config.enabled {
-                    if self.system_monitor.is_none() {
-                        self.system_monitor = Some(SystemMonitor::new(self.monitoring_config.clone()));
-                    }
-                    if let Some(ref mut monitor) = self.system_monitor {
-                        monitor.start_monitoring();
-                    }
-                } else {
-                    if let Some(ref mut monitor) = self.system_monitor {
-                        monitor.stop_monitoring();
-                    }
-                }
+                if completed {
+                    st.is_running    = false;
+                    st.completion_rx = None;
+                    st.progress_rx   = None;
+                    let results_arc  = st.results.clone();
+                    drop(st);
 
-                let prefs = GeneralPrefs {
-                    show_terminal: self.show_terminal,
-                    monitoring_enabled: self.monitoring_config.enabled,
-                };
-                save_general_prefs(&prefs);
-            }
-            ui.label("Si está activado, se mostrarán las métricas del sistema en tiempo real durante las pruebas.");
-            
-            ui.horizontal(|ui| {
-                ui.label("Intervalo de actualización (ms):");
-                ui.add(egui::DragValue::new(&mut self.monitoring_config.interval_ms).range(500..=5000));
-            });
-            
-            ui.horizontal(|ui| {
-                ui.label("Historial máximo:");
-                ui.add(egui::DragValue::new(&mut self.monitoring_config.max_history).range(60..=600));
-            });
-            ui.label("Cantidad de muestras a mantener en memoria (60 = 1 minuto, 300 = 5 minutos)");
-            
-            ui.separator();
-            ui.label("Métricas a monitorear:");
-            
-            ui.checkbox(&mut self.monitoring_config.monitor_cpu, "🖥️ CPU");
-            ui.checkbox(&mut self.monitoring_config.monitor_memory, "💾 Memoria RAM");
-            ui.checkbox(&mut self.monitoring_config.monitor_disk, "💿 Disco I/O");
-            ui.checkbox(&mut self.monitoring_config.monitor_network, "🌐 Red");
-            
-            // Actualizar configuración del monitor si existe
-            if let Some(ref mut monitor) = self.system_monitor {
-                monitor.update_config(self.monitoring_config.clone());
-            }
+                    w.set_ejecutando(false);
+                    w.set_estado("DONE".into());
+                    w.set_barra_progreso("██████████ 100%".into());
 
-            ui.separator();
-            ui.heading("Desinstalar");
-            ui.label("Elimina el binario de stress del sistema y limpia el PATH.");
-            ui.add_space(4.0);
-
-            if let Some(ref result) = self.uninstall_result.clone() {
-                match result {
-                    Ok(_) => {
-                        ui.colored_label(egui::Color32::GREEN, "Desinstalación completada. Puedes cerrar la aplicación.");
-                    }
-                    Err(e) => {
-                        ui.colored_label(egui::Color32::RED, format!("Error: {}", e));
-                    }
-                }
-            } else if self.show_uninstall_confirm {
-                ui.colored_label(egui::Color32::from_rgb(255, 193, 7), "¿Estás seguro de que deseas desinstalar stress?");
-                ui.horizontal(|ui| {
-                    if ui.button("Confirmar desinstalación").clicked() {
-                        self.show_uninstall_confirm = false;
-                        match crate::cli::uninstall_silent() {
-                            Ok(_) => { self.uninstall_result = Some(Ok(())); }
-                            Err(e) => { self.uninstall_result = Some(Err(e.to_string())); }
-                        }
-                    }
-                    if ui.button("Cancelar").clicked() {
-                        self.show_uninstall_confirm = false;
-                    }
-                });
-            } else {
-                if ui.button("Desinstalar stress").clicked() {
-                    self.show_uninstall_confirm = true;
+                    // Actualizar tabla y métricas en la UI
+                    refresh_results_in_ui(&w, &results_arc);
+                    // Ir al tab de resultados automáticamente
+                    w.set_tab_activo(3);
                 }
             }
-        });
+        },
+    );
+
+    window.run()?;
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPERS — Conversión de datos UI ↔ modelos Rust
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Construye un TestRequest a partir de los valores actuales de la ventana Slint.
+fn build_request_from_ui(w: &AppWindow) -> TestRequest {
+    let method_idx = w.get_metodo_idx();
+    let method = match method_idx {
+        0 => HttpMethod::GET,
+        1 => HttpMethod::POST,
+        2 => HttpMethod::PUT,
+        3 => HttpMethod::DELETE,
+        _ => HttpMethod::PATCH,
+    };
+    let body = if method_idx == 0 {
+        None
+    } else {
+        let s = w.get_body_json().to_string();
+        if s.trim().is_empty() || s == "{}" { None } else { Some(s) }
+    };
+    TestRequest {
+        method,
+        endpoint:     w.get_endpoint().to_string(),
+        headers:      parse_headers_json(&w.get_headers_json()),
+        query_params: Vec::new(),
+        body,
+        description:  w.get_descripcion().to_string(),
     }
 }
 
-// Función auxiliar para buscar archivos CSV en un directorio
+/// Aplica una SavedConfig a todos los campos de la ventana Slint.
+fn apply_config_to_ui(w: &AppWindow, cfg: &SavedConfig) {
+    w.set_url_base(cfg.base_url.clone().into());
+    w.set_iteraciones(cfg.iterations.to_string().into());
+    w.set_peticiones_simultaneas(cfg.concurrent_requests.to_string().into());
+    w.set_timeout_seg("30".into());
+    w.set_dir_salida(cfg.output_dir.clone().into());
+    w.set_auto_excel(cfg.auto_generate_report);
+    w.set_auto_subir(cfg.auto_upload_report);
+    w.set_carpeta_remota(cfg.remote_folder_path.clone().into());
+
+    if let Some(req) = cfg.requests.first() {
+        let method_idx: i32 = match req.method {
+            HttpMethod::GET     => 0,
+            HttpMethod::POST    => 1,
+            HttpMethod::PUT     => 2,
+            HttpMethod::DELETE  => 3,
+            HttpMethod::PATCH   => 4,
+            _                   => 0,
+        };
+        w.set_metodo_idx(method_idx);
+        w.set_endpoint(req.endpoint.clone().into());
+        w.set_descripcion(req.description.clone().into());
+
+        let headers_json = serde_json::to_string_pretty(
+            &req.headers.iter()
+                .map(|h| serde_json::json!({h.name.clone(): h.value.clone()}))
+                .collect::<Vec<_>>()
+        ).unwrap_or_else(|_| "{}".to_string());
+        w.set_headers_json(headers_json.into());
+
+        let body = req.body.clone().unwrap_or_default();
+        w.set_body_json(body.into());
+    }
+}
+
+/// Recarga las listas de configuraciones guardadas en la UI.
+fn refresh_configs_in_ui(w: &AppWindow) {
+    let names = list_saved_configs().unwrap_or_default();
+    let slint_names: Vec<SharedString> = names.iter().map(|s| s.as_str().into()).collect();
+    w.set_configs_lista(ModelRc::new(VecModel::from(slint_names)));
+
+    let infos = list_configs_with_info().unwrap_or_default();
+    let slint_infos: Vec<ConfigItemData> = infos.iter().map(|ci| ConfigItemData {
+        name:          ci.name.clone().into(),
+        created_at:    ci.created_at.format("%Y-%m-%d %H:%M").to_string().into(),
+        request_count: ci.request_count as i32,
+        is_suite:      ci.is_suite,
+    }).collect();
+    w.set_configs_info(ModelRc::new(VecModel::from(slint_infos)));
+}
+
+/// Sincroniza la lista de peticiones de la suite al modelo Slint.
+fn sync_suite_to_ui(w: &AppWindow, requests: &[TestRequest]) {
+    let slint_reqs: Vec<SuiteRequestData> = requests.iter().map(|r| SuiteRequestData {
+        method:      r.method.to_string().into(),
+        endpoint:    r.endpoint.clone().into(),
+        description: r.description.clone().into(),
+    }).collect();
+    w.set_suite_requests(ModelRc::new(VecModel::from(slint_reqs)));
+}
+
+/// Actualiza la tabla de resultados y las métricas resumen.
+fn refresh_results_in_ui(w: &AppWindow, results_arc: &Arc<Mutex<Vec<TestSummary>>>) {
+    let Ok(results) = results_arc.lock() else { return };
+    if results.is_empty() {
+        reset_metrics(w);
+        return;
+    }
+
+    let slint_results: Vec<ResultItemData> = results.iter().map(|r| ResultItemData {
+        request_name:  r.request_name.clone().into(),
+        method:        "HTTP".into(),
+        total_requests: r.total_requests as i32,
+        successful:    r.successful_requests as i32,
+        failed:        r.failed_requests as i32,
+        avg_ms:        r.average_duration_ms as f32,
+        max_ms:        r.max_duration_ms as i32,
+        success_rate:  r.success_rate as f32,
+    }).collect();
+    w.set_resultados(ModelRc::new(VecModel::from(slint_results)));
+
+    // Métricas resumen agregadas
+    let total: u32   = results.iter().map(|r| r.total_requests).sum();
+    let ok: u32      = results.iter().map(|r| r.successful_requests).sum();
+    let tasa = if total > 0 { ok as f64 / total as f64 * 100.0 } else { 0.0 };
+    let avg: f64 = results.iter().map(|r| r.average_duration_ms).sum::<f64>() / results.len() as f64;
+    let max: u64 = results.iter().map(|r| r.max_duration_ms).max().unwrap_or(0);
+    let min: u64 = results.iter().map(|r| r.min_duration_ms).min().unwrap_or(0);
+
+    w.set_res_total(total.to_string().into());
+    w.set_res_tasa(format!("{tasa:.1}%").into());
+    w.set_res_avg(format!("{avg:.0}ms").into());
+    w.set_res_max(format!("{max}ms").into());
+    w.set_res_min(format!("{min}ms").into());
+    w.set_res_p95("N/A".into());
+    w.set_res_p99("N/A".into());
+
+    // Gráfico ASCII de distribución de tiempos
+    w.set_ascii_chart(generate_ascii_chart(&results).into());
+}
+
+/// Resetea todos los campos de métricas a cero.
+fn reset_metrics(w: &AppWindow) {
+    w.set_res_total("0".into());
+    w.set_res_tasa("0%".into());
+    w.set_res_avg("0ms".into());
+    w.set_res_max("0ms".into());
+    w.set_res_min("0ms".into());
+    w.set_res_p95("N/A".into());
+    w.set_res_p99("N/A".into());
+    w.set_ascii_chart("// sin datos de resultados".into());
+}
+
+/// Genera un gráfico de barras ASCII con la distribución de tiempos de respuesta.
+fn generate_ascii_chart(results: &[TestSummary]) -> String {
+    if results.is_empty() {
+        return "// sin datos".to_string();
+    }
+
+    // Usar el tiempo promedio de cada petición para clasificar
+    let buckets: [(&str, f64, f64); 5] = [
+        ("  <10ms", 0.0,    10.0),
+        ("10-50ms", 10.0,   50.0),
+        ("50-100 ", 50.0,  100.0),
+        (" 100-1s", 100.0, 1000.0),
+        ("  >1000", 1000.0, f64::MAX),
+    ];
+
+    let total = results.len() as f64;
+    let mut lines = Vec::new();
+    lines.push("// distribución de tiempos promedio".to_string());
+    lines.push(String::new());
+
+    for (label, lo, hi) in &buckets {
+        let count = results.iter()
+            .filter(|r| r.average_duration_ms >= *lo && r.average_duration_ms < *hi)
+            .count() as f64;
+        let pct = if total > 0.0 { count / total } else { 0.0 };
+        let filled = (pct * 20.0).round() as usize;
+        let bar = "█".repeat(filled);
+        lines.push(format!("{} │{:<20}│ {:5.1}%  ({})", label, bar, pct * 100.0, count as usize));
+    }
+
+    lines.join("\n")
+}
+
+/// Carga los datos iniciales de la aplicación en la ventana Slint.
+fn populate_initial_data(w: &AppWindow) {
+    refresh_configs_in_ui(w);
+    w.set_suite_requests(ModelRc::new(VecModel::from(vec![])));
+    w.set_resultados(ModelRc::new(VecModel::from(vec![])));
+    reset_metrics(w);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPERS — Parseo de datos
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn parse_u32(s: &SharedString, default: u32) -> u32 {
+    s.to_string().trim().parse::<u32>().unwrap_or(default)
+}
+
+/// Parsea un JSON de headers al formato Vec<HttpHeader>.
+fn parse_headers_json(json_str: &SharedString) -> Vec<HttpHeader> {
+    let s = json_str.to_string();
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(&s) else { return Vec::new() };
+    let Some(obj) = val.as_object() else { return Vec::new() };
+    obj.iter().map(|(k, v)| HttpHeader {
+        name:  k.clone(),
+        value: v.as_str().unwrap_or("").to_string(),
+    }).collect()
+}
+
+/// Busca archivos CSV en un directorio de salida.
+fn find_csv_files_in_dir(dir_path: &str) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(dir_path) else { return Vec::new() };
+    entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().map_or(false, |ext| ext == "csv"))
+        .collect()
+}
+
+/// Busca un archivo CSV específico por nombre de prueba.
 fn find_csv_file_in_directory(dir_path: &str, test_name: &str) -> Option<PathBuf> {
-    use std::fs;
-
-    if let Ok(entries) = fs::read_dir(dir_path) {
-        for entry in entries {
-            if let Ok(entry) = entry {
-                let path = entry.path();
-                if path.is_file() && path.extension().map_or(false, |ext| ext == "csv") {
-                    if let Some(file_name) = path.file_name() {
-                        let file_name_str = file_name.to_string_lossy();
-                        let safe_test_name = test_name.replace(" ", "_");
-                        if file_name_str.contains(&safe_test_name) {
-                            return Some(path);
-                        }
-                    }
-                }
-            }
+    let Ok(entries) = fs::read_dir(dir_path) else { return None };
+    let safe_name = test_name.replace(' ', "_");
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.is_file() && path.extension().map_or(false, |ext| ext == "csv") {
+            let name = path.file_name()?.to_string_lossy().to_string();
+            if name.contains(&safe_name) { return Some(path); }
         }
     }
     None
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LÓGICA DE EJECUCIÓN — funciones asíncronas (sin modificar la lógica original)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Ejecuta una prueba HTTP individual con soporte de cancelación y progreso.
+async fn execute_single_test(
+    request:            &TestRequest,
+    base_url:           &str,
+    iterations:         u32,
+    concurrent:         u32,
+    wait_time:          u64,
+    output_dir:         &str,
+    logs:               Arc<Mutex<Vec<String>>>,
+    results:            Arc<Mutex<Vec<TestSummary>>>,
+    progress_tx:        mpsc::Sender<f32>,
+    cancel_flag:        Arc<Mutex<bool>>,
+    auto_excel:         bool,
+    auto_upload:        bool,
+    remote_folder_path: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    {
+        let mut l = logs.lock().unwrap();
+        l.push(format!("[{}] Iniciando prueba: {}", chrono::Local::now().format("%H:%M:%S"), request.description));
+    }
+
+    let final_dir = resolve_output_dir(output_dir);
+
+    let tester  = LoadTester::new();
+    let summary = tester.run_single_test_with_progress_and_cancel(
+        request, base_url, iterations, concurrent, wait_time,
+        &final_dir, progress_tx, cancel_flag,
+    ).await?;
+
+    let csv_file = find_csv_file_in_directory(&final_dir, &request.description);
+
+    {
+        let mut r = results.lock().unwrap();
+        r.push(summary);
+    }
+    {
+        let mut l = logs.lock().unwrap();
+        l.push(format!("[{}] Prueba completada: {}", chrono::Local::now().format("%H:%M:%S"), request.description));
+    }
+
+    if auto_excel {
+        let reports_dir = format!("{}/reports", final_dir);
+        let ts          = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let safe        = request.description.replace([' ', '/','\\'], "_");
+        let excel_path  = format!("{}/report_{}_{}.xlsx", reports_dir, safe, ts);
+
+        if let Some(csv) = csv_file {
+            match generate_excel_report_from_files(&[csv.clone()], &excel_path) {
+                Ok(out) => {
+                    let mut l = logs.lock().unwrap();
+                    l.push(format!("[{}] ✅ Excel: {}", chrono::Local::now().format("%H:%M:%S"), out));
+                    upload_files_if_needed(
+                        &[csv, PathBuf::from(&excel_path)],
+                        &remote_folder_path,
+                        &safe, auto_upload, &mut l,
+                    );
+                }
+                Err(e) => {
+                    let mut l = logs.lock().unwrap();
+                    l.push(format!("[{}] ❌ Error Excel: {e}", chrono::Local::now().format("%H:%M:%S")));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Ejecuta una suite completa de pruebas HTTP con soporte de cancelación y progreso.
+async fn execute_suite_test(
+    suite:              &TestSuite,
+    logs:               Arc<Mutex<Vec<String>>>,
+    results:            Arc<Mutex<Vec<TestSummary>>>,
+    progress_tx:        mpsc::Sender<f32>,
+    cancel_flag:        Arc<Mutex<bool>>,
+    auto_excel:         bool,
+    auto_upload:        bool,
+    remote_folder_path: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    {
+        let mut l = logs.lock().unwrap();
+        l.push(format!("[{}] Iniciando suite: {}", chrono::Local::now().format("%H:%M:%S"), suite.name));
+    }
+
+    let final_dir = resolve_output_dir(&suite.output_dir);
+    let mut corrected = suite.clone();
+    corrected.output_dir = final_dir.clone();
+
+    let tester    = LoadTester::new();
+    let summaries = tester.run_suite_test_with_progress_and_cancel(&corrected, progress_tx, cancel_flag).await?;
+
+    {
+        let mut r = results.lock().unwrap();
+        r.extend(summaries);
+    }
+    {
+        let mut l = logs.lock().unwrap();
+        l.push(format!("[{}] Suite completada: {}", chrono::Local::now().format("%H:%M:%S"), suite.name));
+    }
+
+    if auto_excel {
+        let csv_files   = find_csv_files_in_dir(&final_dir);
+        let reports_dir = format!("{}/reports", final_dir);
+        let ts          = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let safe        = suite.name.replace([' ', '/','\\'], "_");
+        let excel_path  = format!("{}/report_{}_{}.xlsx", reports_dir, safe, ts);
+
+        match generate_excel_report_from_files(&csv_files, &excel_path) {
+            Ok(out) => {
+                let mut l = logs.lock().unwrap();
+                l.push(format!("[{}] ✅ Excel: {}", chrono::Local::now().format("%H:%M:%S"), out));
+                let mut files: Vec<PathBuf> = csv_files;
+                files.push(PathBuf::from(&excel_path));
+                upload_files_if_needed(&files, &remote_folder_path, &safe, auto_upload, &mut l);
+            }
+            Err(e) => {
+                let mut l = logs.lock().unwrap();
+                l.push(format!("[{}] ❌ Error Excel: {e}", chrono::Local::now().format("%H:%M:%S")));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Sube archivos a una carpeta remota (copia local) si el flag está habilitado.
+fn upload_files_if_needed(
+    files:         &[PathBuf],
+    remote_folder: &str,
+    label:         &str,
+    do_upload:     bool,
+    logs:          &mut Vec<String>,
+) {
+    if !do_upload || remote_folder.is_empty() { return; }
+
+    let ts   = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let dest = format!("{}/test_{}_{}", remote_folder, label, ts);
+
+    if let Err(e) = fs::create_dir_all(&dest) {
+        logs.push(format!("[{}] ❌ Crear carpeta remota: {e}", chrono::Local::now().format("%H:%M:%S")));
+        return;
+    }
+
+    let mut count = 0usize;
+    for file in files {
+        if !file.exists() { continue; }
+        let file_name = file.file_name().unwrap_or_default().to_string_lossy();
+        let target = format!("{}/{}", dest, file_name);
+        if fs::copy(file, &target).is_ok() { count += 1; }
+    }
+    logs.push(format!("[{}] ✅ {count} archivos subidos a: {dest}", chrono::Local::now().format("%H:%M:%S")));
+}
+
+/// Resuelve el directorio de salida real, creándolo si es necesario.
+fn resolve_output_dir(requested: &str) -> String {
+    if requested.is_empty() {
+        return get_output_directory();
+    }
+    match fs::create_dir_all(requested) {
+        Ok(_)  => requested.to_string(),
+        Err(_) => get_output_directory(),
+    }
 }

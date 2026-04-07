@@ -1,0 +1,366 @@
+// main.slint — Ventana principal de la aplicación Stress
+// Orquesta el layout global: cabecera, tabs, contenido y footer
+// Importa todos los componentes y pantallas del sistema
+
+import {
+    Tema, AppTabs, AppButton, StatusBar,
+    ConfigItemData, ResultItemData, SuiteRequestData
+} from "components.slint";
+
+import { TabIndividual }  from "individual.slint";
+import { TabSuite }       from "suite.slint";
+import { TabConfig }      from "config.slint";
+import { TabResultados }  from "results.slint";
+import { TabGeneral }     from "general.slint";
+
+// ── Ventana raíz expuesta a Rust ─────────────────────────────────────────────
+export component AppWindow inherits Window {
+    title:            "Stress — Pruebas de Carga HTTP";
+    preferred-width:  1280px;
+    preferred-height: 820px;
+    background:       Tema.fondo-principal;
+
+    // ====================================================================
+    // PROPIEDADES GLOBALES
+    // ====================================================================
+    in-out property <int>    tab-activo:      0;
+    in-out property <bool>   ejecutando:      false;
+    in-out property <float>  progreso:        0.0;
+    in-out property <string> estado:          "IDLE";
+    in-out property <string> barra-progreso:  "░░░░░░░░░░ 0%";
+    in-out property <string> mensaje-estado:  "";
+
+    // ====================================================================
+    // PROPIEDADES — TAB 1: INDIVIDUAL
+    // ====================================================================
+    in-out property <[string]> configs-lista:           [];
+    in-out property <int>      config-idx:              -1;
+    in-out property <string>   url-base:                "http://localhost:8080";
+    in-out property <string>   iteraciones:             "10";
+    in-out property <string>   peticiones-simultaneas:  "1";
+    in-out property <string>   timeout-seg:             "30";
+    in-out property <string>   dir-salida:              "./results";
+    in-out property <bool>     auto-excel:              true;
+    in-out property <bool>     auto-subir:              false;
+    in-out property <string>   carpeta-remota:          "";
+    in-out property <int>      metodo-idx:              0;
+    in-out property <string>   endpoint:                "/";
+    in-out property <string>   descripcion:             "";
+    in-out property <string>   headers-json:            "{}";
+    in-out property <string>   body-json:               "{}";
+
+    // ====================================================================
+    // PROPIEDADES — TAB 2: SUITE
+    // ====================================================================
+    in-out property <string>             suite-nombre:      "Nueva suite";
+    in-out property <[SuiteRequestData]> suite-requests:    [];
+    in-out property <int>                suite-seleccionado: -1;
+
+    // ====================================================================
+    // PROPIEDADES — TAB 3: CONFIGURACIONES
+    // ====================================================================
+    in-out property <[ConfigItemData]> configs-info:    [];
+    in-out property <int>              config-info-idx: -1;
+    in-out property <string>           form-nombre:     "";
+    in-out property <string>           form-url:        "http://localhost:8080";
+    in-out property <string>           form-iter:       "10";
+    in-out property <string>           form-concurrentes: "1";
+    in-out property <string>           form-desc:       "";
+
+    // ====================================================================
+    // PROPIEDADES — TAB 4: RESULTADOS
+    // ====================================================================
+    in-out property <[ResultItemData]> resultados:   [];
+    in property    <string>            res-total:    "0";
+    in property    <string>            res-tasa:     "0%";
+    in property    <string>            res-avg:      "0ms";
+    in property    <string>            res-max:      "0ms";
+    in property    <string>            res-min:      "0ms";
+    in property    <string>            res-p95:      "0ms";
+    in property    <string>            res-p99:      "0ms";
+    in property    <string>            ascii-chart:  "// sin datos";
+
+    // ====================================================================
+    // PROPIEDADES — TAB 5: GENERAL
+    // ====================================================================
+    in-out property <string> proxy-url:      "";
+    in-out property <string> timeout-global: "30";
+    in-out property <string> reintentos:     "0";
+    in-out property <string> dir-reportes:   "./reports";
+    in-out property <string> prefijo-reporte: "report";
+    in-out property <bool>   monitoreo:      false;
+
+    // ====================================================================
+    // CALLBACKS — expuestos a Rust
+    // ====================================================================
+
+    // Tab 1 — Individual
+    callback ejecutar-individual();
+    callback cancelar();
+    callback seleccionar-dir-salida();
+    callback seleccionar-dir-remota();
+    callback cargar-config(int);
+    callback guardar-config();
+
+    // Tab 2 — Suite
+    callback suite-agregar();
+    callback suite-editar(int);
+    callback suite-eliminar(int);
+    callback suite-mover-arriba(int);
+    callback suite-mover-abajo(int);
+    callback ejecutar-suite();
+
+    // Tab 3 — Configuraciones
+    callback config-guardar();
+    callback config-duplicar(int);
+    callback config-eliminar(int);
+    callback config-cargar(int);
+
+    // Tab 4 — Resultados
+    callback exportar-excel();
+    callback limpiar-resultados();
+
+    // Tab 5 — General
+    callback guardar-general();
+    callback seleccionar-dir-reportes();
+
+    // ====================================================================
+    // LAYOUT PRINCIPAL
+    // ====================================================================
+    VerticalLayout {
+        spacing: 0px;
+
+        // ── Barra superior ───────────────────────────────────────────
+        Rectangle {
+            height:       44px;
+            background:   #080500;
+            border-color: #3a2500;
+            border-width: 1px;
+
+            HorizontalLayout {
+                padding-left:  14px;
+                padding-right: 14px;
+                spacing:       0px;
+
+                // Decoración izquierda estilo CRT
+                Text {
+                    text:               "▓▒░";
+                    color:              #888888;
+                    font-family:        "Courier New";
+                    font-size:          16px;
+                    font-weight:        700;
+                    vertical-alignment: center;
+                }
+
+                // Título centrado
+                Text {
+                    text:                 "STRESS  —  PRUEBAS DE CARGA HTTP";
+                    color:                #ffffff;
+                    font-family:          "Courier New";
+                    font-size:            14px;
+                    font-weight:          700;
+                    letter-spacing:       3px;
+                    horizontal-stretch:   1;
+                    horizontal-alignment: center;
+                    vertical-alignment:   center;
+                }
+
+                // Badge de estado READY / RUNNING
+                Rectangle {
+                    width:         90px;
+                    height:        24px;
+                    background:    #0c0800;
+                    border-color:  root.ejecutando ? #ef9f27 : #3a2500;
+                    border-width:  1px;
+                    border-radius: 2px;
+                    y:             (parent.height - self.height) / 2;
+
+                    Text {
+                        text:                 root.ejecutando ? "RUNNING" : "READY";
+                        color:                root.ejecutando ? #ffffff : #888888;
+                        font-family:          "Courier New";
+                        font-size:            11px;
+                        font-weight:          700;
+                        letter-spacing:       1px;
+                        horizontal-alignment: center;
+                        vertical-alignment:   center;
+                    }
+                }
+            }
+        }
+
+        // ── Barra de tabs ────────────────────────────────────────────
+        AppTabs {
+            tabs:       ["INDIVIDUAL", "SUITE", "CONFIGURACIONES", "RESULTADOS", "OPCIONES GENERALES"];
+            tab-activo <=> root.tab-activo;
+        }
+
+        // ── Área de contenido (cambia por tab) ───────────────────────
+        Rectangle {
+            background:       Tema.fondo-principal;
+            vertical-stretch: 1;
+            clip:             true;
+
+            // Tab 0 — Prueba Individual
+            if root.tab-activo == 0: TabIndividual {
+                configs-lista           <=> root.configs-lista;
+                config-idx              <=> root.config-idx;
+                url-base                <=> root.url-base;
+                iteraciones             <=> root.iteraciones;
+                peticiones-simultaneas  <=> root.peticiones-simultaneas;
+                timeout-seg             <=> root.timeout-seg;
+                dir-salida              <=> root.dir-salida;
+                auto-excel              <=> root.auto-excel;
+                auto-subir              <=> root.auto-subir;
+                carpeta-remota          <=> root.carpeta-remota;
+                metodo-idx              <=> root.metodo-idx;
+                endpoint                <=> root.endpoint;
+                descripcion             <=> root.descripcion;
+                headers-json            <=> root.headers-json;
+                body-json               <=> root.body-json;
+                cargar-config(i)        => { root.cargar-config(i); }
+                seleccionar-dir-salida()  => { root.seleccionar-dir-salida(); }
+                seleccionar-dir-remota()  => { root.seleccionar-dir-remota(); }
+            }
+
+            // Tab 1 — Suite de Pruebas
+            if root.tab-activo == 1: TabSuite {
+                suite-nombre           <=> root.suite-nombre;
+                suite-requests         <=> root.suite-requests;
+                suite-seleccionado     <=> root.suite-seleccionado;
+                url-base               <=> root.url-base;
+                iteraciones            <=> root.iteraciones;
+                peticiones-simultaneas <=> root.peticiones-simultaneas;
+                suite-agregar()        => { root.suite-agregar(); }
+                suite-editar(i)        => { root.suite-editar(i); }
+                suite-eliminar(i)      => { root.suite-eliminar(i); }
+                mover-arriba(i)        => { root.suite-mover-arriba(i); }
+                mover-abajo(i)         => { root.suite-mover-abajo(i); }
+            }
+
+            // Tab 2 — Configuraciones
+            if root.tab-activo == 2: TabConfig {
+                configs-info     <=> root.configs-info;
+                config-info-idx  <=> root.config-info-idx;
+                form-nombre      <=> root.form-nombre;
+                form-url         <=> root.form-url;
+                form-iter        <=> root.form-iter;
+                form-concurrentes <=> root.form-concurrentes;
+                form-desc        <=> root.form-desc;
+                config-guardar()      => { root.config-guardar(); }
+                config-duplicar(i)    => { root.config-duplicar(i); }
+                config-eliminar(i)    => { root.config-eliminar(i); }
+                config-cargar(i)      => { root.config-cargar(i); }
+            }
+
+            // Tab 3 — Resultados
+            if root.tab-activo == 3: TabResultados {
+                resultados       <=> root.resultados;
+                res-total:       root.res-total;
+                res-tasa:        root.res-tasa;
+                res-avg:         root.res-avg;
+                res-max:         root.res-max;
+                res-min:         root.res-min;
+                res-p95:         root.res-p95;
+                res-p99:         root.res-p99;
+                ascii-chart:     root.ascii-chart;
+                exportar-excel()     => { root.exportar-excel(); }
+                limpiar-resultados() => { root.limpiar-resultados(); }
+            }
+
+            // Tab 4 — Opciones Generales
+            if root.tab-activo == 4: TabGeneral {
+                proxy-url             <=> root.proxy-url;
+                timeout-global        <=> root.timeout-global;
+                reintentos            <=> root.reintentos;
+                dir-reportes          <=> root.dir-reportes;
+                prefijo-reporte       <=> root.prefijo-reporte;
+                monitoreo             <=> root.monitoreo;
+                guardar-general()         => { root.guardar-general(); }
+                seleccionar-dir-reportes() => { root.seleccionar-dir-reportes(); }
+            }
+        }
+
+        // ── Footer fijo ──────────────────────────────────────────────
+        Rectangle {
+            height:       54px;
+            background:   #080500;
+            border-color: #3a2500;
+            border-width: 1px;
+
+            HorizontalLayout {
+                padding-left:  14px;
+                padding-right: 14px;
+                spacing:       10px;
+
+                // StatusBar ocupa todo el espacio restante
+                StatusBar {
+                    horizontal-stretch: 1;
+                    estado:       root.estado;
+                    barra-texto:  root.barra-progreso;
+                    ejecutando:   root.ejecutando;
+                }
+
+                // ── Botones condicionales por tab ──────────────────
+
+                // Tab 0 — Individual: guardar config + ejecutar/cancelar
+                if root.tab-activo == 0: AppButton {
+                    texto:    "GUARDAR CONFIG";
+                    primario: false;
+                    width:    130px;
+                    pulsado() => { root.guardar-config(); }
+                }
+                if root.tab-activo == 0: AppButton {
+                    texto:     root.ejecutando ? "⏹ CANCELAR" : "▶ EJECUTAR";
+                    primario:  true;
+                    width:     130px;
+                    pulsado() => {
+                        if (root.ejecutando) { root.cancelar(); }
+                        else { root.ejecutar-individual(); }
+                    }
+                }
+
+                // Tab 1 — Suite: guardar config + ejecutar suite
+                if root.tab-activo == 1: AppButton {
+                    texto:    "GUARDAR CONFIG";
+                    primario: false;
+                    width:    130px;
+                    pulsado() => { root.guardar-config(); }
+                }
+                if root.tab-activo == 1: AppButton {
+                    texto:     root.ejecutando ? "⏹ CANCELAR" : "▶ EJECUTAR SUITE";
+                    primario:  true;
+                    width:     150px;
+                    pulsado() => {
+                        if (root.ejecutando) { root.cancelar(); }
+                        else { root.ejecutar-suite(); }
+                    }
+                }
+
+                // Tab 2 — Configuraciones: sin botones extra en footer
+
+                // Tab 3 — Resultados: limpiar + exportar
+                if root.tab-activo == 3: AppButton {
+                    texto:    "LIMPIAR";
+                    primario: false;
+                    width:    90px;
+                    pulsado() => { root.limpiar-resultados(); }
+                }
+                if root.tab-activo == 3: AppButton {
+                    texto:    "EXPORTAR EXCEL";
+                    primario: true;
+                    width:    140px;
+                    pulsado() => { root.exportar-excel(); }
+                }
+
+                // Tab 4 — General: guardar
+                if root.tab-activo == 4: AppButton {
+                    texto:    "GUARDAR OPCIONES";
+                    primario: true;
+                    width:    150px;
+                    pulsado() => { root.guardar-general(); }
+                }
+            }
+        }
+    }
+}

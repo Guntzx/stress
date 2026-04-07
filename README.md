@@ -66,7 +66,7 @@ Elimina el binario del sistema y limpia la entrada del PATH.
 
 ## Compilar manualmente (desarrolladores)
 
-**Requisitos:** [Rust 1.70+](https://rustup.rs/) y Git.
+**Requisitos:** [Rust 1.88+](https://rustup.rs/) y Git.
 
 ```bash
 git clone https://github.com/Guntzx/stress.git
@@ -100,8 +100,8 @@ Ejecutables generados:
 |-------|----------|
 | `Permission denied` | `chmod +x stress` |
 | `stress: command not found` | Reinicia la terminal o ejecuta `source ~/.bashrc` |
-| `Library not found` (Linux) | `sudo apt-get install libssl-dev libgtk-3-dev libwebkit2gtk-4.0-dev` |
-| GUI no inicia (Linux) | `sudo apt-get install libgtk-3-dev libwebkit2gtk-4.0-dev` |
+| `Library not found` (Linux) | `sudo apt-get install libxkbcommon-dev libwayland-dev libfontconfig-dev libssl-dev` |
+| GUI no inicia (Linux) | `sudo apt-get install libxkbcommon-dev libwayland-dev libfontconfig-dev` |
 | Windows bloquea el ejecutable | Clic derecho → Propiedades → "Desbloquear" |
 
 Para más ayuda, abre un [issue en GitHub](https://github.com/Guntzx/stress/issues).

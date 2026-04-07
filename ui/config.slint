@@ -1,0 +1,306 @@
+// config.slint — Tab 3: Configuraciones Guardadas
+// Gestión de presets: listar, crear, editar, duplicar y eliminar
+
+import {
+    Tema, AppCard, AppInput, AppButton, ConfigItemData
+} from "components.slint";
+
+export component TabConfig inherits Rectangle {
+    // ── Lista de configuraciones guardadas ───────────────────────────
+    in-out property <[ConfigItemData]> configs-info:    [];
+    in-out property <int>              config-info-idx: -1;
+
+    // ── Formulario de edición / creación ────────────────────────────
+    in-out property <string> form-nombre:       "";
+    in-out property <string> form-url:          "http://localhost:8080";
+    in-out property <string> form-iter:         "10";
+    in-out property <string> form-concurrentes: "1";
+    in-out property <string> form-desc:         "";
+
+    // ── Callbacks hacia Rust ─────────────────────────────────────────
+    callback config-guardar();
+    callback config-duplicar(int);
+    callback config-eliminar(int);
+    callback config-cargar(int);
+
+    background: Tema.fondo-principal;
+
+    // Config seleccionada actual
+    property <ConfigItemData> config-sel:
+        root.config-info-idx >= 0 && root.config-info-idx < root.configs-info.length
+        ? root.configs-info[root.config-info-idx]
+        : { name: "", created-at: "", request-count: 0, is-suite: false };
+
+    VerticalLayout {
+        padding:  14px;
+        spacing:  10px;
+
+        // ── Título informativo ───────────────────────────────────────
+        Rectangle {
+            height: 24px;
+            background: transparent;
+
+            Text {
+                text:               "// gestiona tus configuraciones guardadas — carga, duplica o elimina presets";
+                color:              Tema.comentario;
+                font-family:        "Courier New";
+                font-size:          11px;
+                vertical-alignment: center;
+            }
+        }
+
+        // ── 2 columnas: Lista | Formulario ───────────────────────────
+        HorizontalLayout {
+            spacing:          10px;
+            vertical-stretch: 1;
+
+            // ── Columna izquierda — Lista de configs ─────────────────
+            AppCard {
+                titulo:           "CONFIGS GUARDADAS";
+                horizontal-stretch: 1;
+                vertical-stretch:  1;
+
+                VerticalLayout {
+                    spacing: 8px;
+
+                    // Cabecera de tabla
+                    Rectangle {
+                        height:     22px;
+                        background: #0a0700;
+
+                        HorizontalLayout {
+                            padding-left:  8px;
+                            padding-right: 8px;
+                            spacing:       0;
+
+                            Text {
+                                text:               "NOMBRE";
+                                color:              Tema.comentario;
+                                font-family:        "Courier New";
+                                font-size:          11px;
+                                font-weight:        700;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text:               "FECHA";
+                                color:              Tema.comentario;
+                                font-family:        "Courier New";
+                                font-size:          11px;
+                                font-weight:        700;
+                                width:              130px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text:               "REQS";
+                                color:              Tema.comentario;
+                                font-family:        "Courier New";
+                                font-size:          11px;
+                                font-weight:        700;
+                                width:              38px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Filas de configuraciones
+                    Rectangle {
+                        vertical-stretch: 1;
+                        clip: true;
+
+                        VerticalLayout {
+                            spacing: 0px;
+
+                            for cfg[idx] in root.configs-info: Rectangle {
+                                height:     34px;
+                                background: idx == root.config-info-idx
+                                    ? #1a0f00
+                                    : (cfg-ta.has-hover ? #100a00 : transparent);
+
+                                // Borde izquierdo de selección activa
+                                Rectangle {
+                                    width:      2px;
+                                    height:     parent.height;
+                                    background: idx == root.config-info-idx
+                                        ? Tema.primario : transparent;
+                                }
+
+                                HorizontalLayout {
+                                    padding-left:  8px;
+                                    padding-right: 8px;
+                                    spacing:       0;
+
+                                    // Nombre de la config
+                                    Text {
+                                        text:               cfg.name;
+                                        color:              idx == root.config-info-idx
+                                            ? Tema.primario : Tema.etiqueta;
+                                        font-family:        "Courier New";
+                                        font-size:          12px;
+                                        horizontal-stretch: 1;
+                                        vertical-alignment: center;
+                                        overflow:           elide;
+                                    }
+
+                                    // Fecha de creación
+                                    Text {
+                                        text:               cfg.created-at;
+                                        color:              Tema.comentario;
+                                        font-family:        "Courier New";
+                                        font-size:          11px;
+                                        width:              130px;
+                                        vertical-alignment: center;
+                                        overflow:           elide;
+                                    }
+
+                                    // Cantidad de requests
+                                    Text {
+                                        text:               cfg.request-count;
+                                        color:              Tema.comentario;
+                                        font-family:        "Courier New";
+                                        font-size:          11px;
+                                        width:              38px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                // Separador inferior
+                                Rectangle {
+                                    y:          parent.height - 1px;
+                                    height:     1px;
+                                    background: Tema.borde;
+                                }
+
+                                cfg-ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.config-info-idx = idx; }
+                                }
+                            }
+
+                            // Mensaje cuando no hay configs
+                            if root.configs-info.length == 0: Rectangle {
+                                height: 60px;
+                                Text {
+                                    text:                 "// Sin configuraciones guardadas";
+                                    color:                Tema.comentario;
+                                    font-family:          "Courier New";
+                                    font-size:            12px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment:   center;
+                                }
+                            }
+                        }
+                    }
+
+                    // Botones de acción sobre la lista
+                    HorizontalLayout {
+                        spacing: 8px;
+
+                        AppButton {
+                            texto:     "▶ CARGAR";
+                            primario:  true;
+                            width:     100px;
+                            habilitado: root.config-info-idx >= 0;
+                            pulsado() => {
+                                if (root.config-info-idx >= 0) {
+                                    root.config-cargar(root.config-info-idx);
+                                }
+                            }
+                        }
+                        AppButton {
+                            texto:     "DUPLICAR";
+                            primario:  false;
+                            width:     90px;
+                            habilitado: root.config-info-idx >= 0;
+                            pulsado() => {
+                                if (root.config-info-idx >= 0) {
+                                    root.config-duplicar(root.config-info-idx);
+                                }
+                            }
+                        }
+                        AppButton {
+                            texto:     "ELIMINAR";
+                            primario:  false;
+                            width:     90px;
+                            habilitado: root.config-info-idx >= 0;
+                            pulsado() => {
+                                if (root.config-info-idx >= 0) {
+                                    root.config-eliminar(root.config-info-idx);
+                                }
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                    }
+                }
+            }
+
+            // ── Columna derecha — Formulario edición / creación ──────
+            AppCard {
+                titulo:           "NUEVA CONFIGURACIÓN";
+                horizontal-stretch: 1;
+                vertical-stretch:  1;
+
+                VerticalLayout {
+                    spacing: 8px;
+
+                    // Si hay una config seleccionada, mostrar sus datos
+                    if root.config-info-idx >= 0: Text {
+                        text:        "// editando: " + root.config-sel.name;
+                        color:       Tema.comentario;
+                        font-family: "Courier New";
+                        font-size:   11px;
+                    }
+
+                    AppInput {
+                        etiqueta: "NOMBRE DE LA CONFIGURACIÓN";
+                        valor <=> root.form-nombre;
+                    }
+
+                    AppInput {
+                        etiqueta: "URL BASE";
+                        valor <=> root.form-url;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 6px;
+
+                        AppInput {
+                            etiqueta:           "ITERACIONES";
+                            valor <=>           root.form-iter;
+                            horizontal-stretch: 1;
+                        }
+                        AppInput {
+                            etiqueta:           "SIMULTÁNEAS";
+                            valor <=>           root.form-concurrentes;
+                            horizontal-stretch: 1;
+                        }
+                    }
+
+                    AppInput {
+                        etiqueta:   "DESCRIPCIÓN (opcional)";
+                        valor <=>   root.form-desc;
+                        multilinea: true;
+                    }
+
+                    // Decoración informativa
+                    Text {
+                        text:        "// las peticiones se guardan desde las\n// pestañas INDIVIDUAL y SUITE";
+                        color:       Tema.comentario;
+                        font-family: "Courier New";
+                        font-size:   11px;
+                        wrap:        word-wrap;
+                    }
+
+                    Rectangle { vertical-stretch: 1; background: transparent; }
+
+                    // Botón guardar nueva config
+                    AppButton {
+                        texto:    "GUARDAR CONFIGURACIÓN";
+                        primario: true;
+                        pulsado() => { root.config-guardar(); }
+                    }
+                }
+            }
+        }
+    }
+}
