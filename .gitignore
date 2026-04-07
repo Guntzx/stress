@@ -80,5 +80,5 @@ env/
 venv/
 .venv/
 .claude/
-agents/
-skills-lock/
+.agents/
+.skills-lock/
