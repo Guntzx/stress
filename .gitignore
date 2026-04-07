@@ -81,4 +81,4 @@ venv/
 .venv/
 .claude/
 .agents/
-.skills-lock/
+skills-lock.json
