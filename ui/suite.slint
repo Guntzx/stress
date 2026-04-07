@@ -1,0 +1,364 @@
+// suite.slint — Tab 2: Suite de Pruebas
+// Lista de peticiones que se ejecutan en secuencia como suite
+
+import {
+    Tema, AppCard, AppInput, AppButton, AppBadge, SuiteRequestData
+} from "components.slint";
+
+export component TabSuite inherits Rectangle {
+    // ── Datos de la suite ────────────────────────────────────────────
+    in-out property <string>              suite-nombre:     "Nueva suite";
+    in-out property <[SuiteRequestData]>  suite-requests:   [];
+    in-out property <int>                 suite-seleccionado: -1;
+
+    // Propiedades generales de configuración (compartidas con Tab 1)
+    in-out property <string> url-base:               "http://localhost:8080";
+    in-out property <string> iteraciones:            "10";
+    in-out property <string> peticiones-simultaneas: "1";
+
+    // ── Callbacks hacia Rust ─────────────────────────────────────────
+    callback suite-agregar();
+    callback suite-editar(int);
+    callback suite-eliminar(int);
+    callback mover-arriba(int);
+    callback mover-abajo(int);
+
+    background: Tema.fondo-principal;
+
+    // Ítem seleccionado para preview (fallback si no hay selección)
+    property <SuiteRequestData> req-preview:
+        root.suite-seleccionado >= 0 && root.suite-seleccionado < root.suite-requests.length
+        ? root.suite-requests[root.suite-seleccionado]
+        : { method: "", endpoint: "", description: "— Sin selección —" };
+
+    VerticalLayout {
+        padding:  14px;
+        spacing:  10px;
+
+        // ── Card ancha: nombre de la suite + config global ───────────
+        AppCard {
+            titulo: "SUITE DE PRUEBAS";
+            height: 84px;
+
+            HorizontalLayout {
+                spacing: 10px;
+
+                AppInput {
+                    etiqueta:           "NOMBRE DE LA SUITE";
+                    valor <=>           root.suite-nombre;
+                    horizontal-stretch: 1;
+                }
+                AppInput {
+                    etiqueta:           "ITERACIONES";
+                    valor <=>           root.iteraciones;
+                    width:              90px;
+                }
+                AppInput {
+                    etiqueta:           "SIMULTÁNEAS";
+                    valor <=>           root.peticiones-simultaneas;
+                    width:              90px;
+                }
+                AppInput {
+                    etiqueta:           "URL BASE";
+                    valor <=>           root.url-base;
+                    horizontal-stretch: 1;
+                }
+            }
+        }
+
+        // ── 2 columnas: tabla + controles | preview ──────────────────
+        HorizontalLayout {
+            spacing:          10px;
+            vertical-stretch: 1;
+
+            // ── Columna izquierda — Lista + botones de acción ────────
+            AppCard {
+                titulo:           "PETICIONES CONFIGURADAS";
+                horizontal-stretch: 2;
+                vertical-stretch:  1;
+
+                VerticalLayout {
+                    spacing: 8px;
+
+                    // Cabecera de tabla
+                    Rectangle {
+                        height:     24px;
+                        background: #0a0700;
+
+                        HorizontalLayout {
+                            padding-left:  8px;
+                            padding-right: 8px;
+                            spacing:       0;
+
+                            Text {
+                                text:               "#";
+                                color:              Tema.comentario;
+                                font-family:        "Courier New";
+                                font-size:          11px;
+                                font-weight:        700;
+                                width:              28px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text:               "MÉTODO";
+                                color:              Tema.comentario;
+                                font-family:        "Courier New";
+                                font-size:          11px;
+                                font-weight:        700;
+                                width:              70px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text:               "ENDPOINT";
+                                color:              Tema.comentario;
+                                font-family:        "Courier New";
+                                font-size:          11px;
+                                font-weight:        700;
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text:               "DESCRIPCIÓN";
+                                color:              Tema.comentario;
+                                font-family:        "Courier New";
+                                font-size:          11px;
+                                font-weight:        700;
+                                width:              160px;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Filas de la tabla
+                    Rectangle {
+                        vertical-stretch: 1;
+                        clip: true;
+
+                        VerticalLayout {
+                            spacing: 0px;
+
+                            for req[idx] in root.suite-requests: Rectangle {
+                                height:     32px;
+                                background: idx == root.suite-seleccionado
+                                    ? #1a0f00
+                                    : (fila-ta.has-hover ? #100a00 : transparent);
+
+                                // Borde izquierdo de selección
+                                Rectangle {
+                                    width:      2px;
+                                    height:     parent.height;
+                                    background: idx == root.suite-seleccionado
+                                        ? Tema.primario : transparent;
+                                }
+
+                                HorizontalLayout {
+                                    padding-left:  8px;
+                                    padding-right: 8px;
+                                    spacing:       0;
+
+                                    Text {
+                                        text:               idx + 1;
+                                        color:              Tema.comentario;
+                                        font-family:        "Courier New";
+                                        font-size:          12px;
+                                        width:              28px;
+                                        vertical-alignment: center;
+                                    }
+                                    AppBadge {
+                                        metodo: req.method;
+                                        width:  66px;
+                                        height: 20px;
+                                        y:      (parent.height - self.height) / 2;
+                                    }
+                                    Text {
+                                        text:               req.endpoint;
+                                        color:              Tema.primario;
+                                        font-family:        "Courier New";
+                                        font-size:          12px;
+                                        horizontal-stretch: 1;
+                                        vertical-alignment: center;
+                                        overflow:           elide;
+                                    }
+                                    Text {
+                                        text:               req.description;
+                                        color:              Tema.etiqueta;
+                                        font-family:        "Courier New";
+                                        font-size:          12px;
+                                        width:              160px;
+                                        vertical-alignment: center;
+                                        overflow:           elide;
+                                    }
+                                }
+
+                                // Separador inferior
+                                Rectangle {
+                                    y:          parent.height - 1px;
+                                    height:     1px;
+                                    background: Tema.borde;
+                                }
+
+                                fila-ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.suite-seleccionado = idx; }
+                                }
+                            }
+
+                            // Mensaje cuando no hay requests
+                            if root.suite-requests.length == 0: Rectangle {
+                                height: 80px;
+                                Text {
+                                    text:                 "// Suite vacía — agrega peticiones con el botón [ + NUEVA ]";
+                                    color:                Tema.comentario;
+                                    font-family:          "Courier New";
+                                    font-size:            12px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment:   center;
+                                }
+                            }
+                        }
+                    }
+
+                    // Botones de acción sobre la lista
+                    HorizontalLayout {
+                        spacing: 8px;
+
+                        AppButton {
+                            texto:    "+ NUEVA";
+                            primario: true;
+                            width:    90px;
+                            pulsado() => { root.suite-agregar(); }
+                        }
+                        AppButton {
+                            texto:     "EDITAR";
+                            primario:  false;
+                            width:     80px;
+                            habilitado: root.suite-seleccionado >= 0;
+                            pulsado() => {
+                                if (root.suite-seleccionado >= 0) {
+                                    root.suite-editar(root.suite-seleccionado);
+                                }
+                            }
+                        }
+                        AppButton {
+                            texto:     "ELIMINAR";
+                            primario:  false;
+                            width:     90px;
+                            habilitado: root.suite-seleccionado >= 0;
+                            pulsado() => {
+                                if (root.suite-seleccionado >= 0) {
+                                    root.suite-eliminar(root.suite-seleccionado);
+                                }
+                            }
+                        }
+                        AppButton {
+                            texto:     "↑";
+                            primario:  false;
+                            width:     38px;
+                            habilitado: root.suite-seleccionado > 0;
+                            pulsado() => {
+                                if (root.suite-seleccionado > 0) {
+                                    root.mover-arriba(root.suite-seleccionado);
+                                }
+                            }
+                        }
+                        AppButton {
+                            texto:     "↓";
+                            primario:  false;
+                            width:     38px;
+                            habilitado: root.suite-seleccionado >= 0
+                                && root.suite-seleccionado < root.suite-requests.length - 1;
+                            pulsado() => {
+                                if (root.suite-seleccionado >= 0) {
+                                    root.mover-abajo(root.suite-seleccionado);
+                                }
+                            }
+                        }
+
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                    }
+                }
+            }
+
+            // ── Columna derecha — Preview de petición seleccionada ───
+            AppCard {
+                titulo:           "PREVIEW";
+                horizontal-stretch: 1;
+                vertical-stretch:  1;
+
+                VerticalLayout {
+                    spacing: 10px;
+
+                    if root.suite-seleccionado < 0: Text {
+                        text:                 "// Selecciona una petición\n// de la lista para ver\n// su detalle aquí";
+                        color:                Tema.comentario;
+                        font-family:          "Courier New";
+                        font-size:            12px;
+                        horizontal-alignment: center;
+                        vertical-alignment:   center;
+                    }
+
+                    if root.suite-seleccionado >= 0: VerticalLayout {
+                        spacing: 10px;
+
+                        // Badge del método
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing:   8px;
+
+                            Text {
+                                text:               "método";
+                                color:              Tema.etiqueta;
+                                font-family:        "Courier New";
+                                font-size:          11px;
+                                vertical-alignment: center;
+                            }
+                            AppBadge {
+                                metodo: root.req-preview.method;
+                                height: 22px;
+                            }
+                        }
+
+                        // Campos de detalle
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            Text {
+                                text:        "endpoint";
+                                color:       Tema.etiqueta;
+                                font-family: "Courier New";
+                                font-size:   11px;
+                            }
+                            Text {
+                                text:        root.req-preview.endpoint;
+                                color:       Tema.primario;
+                                font-family: "Courier New";
+                                font-size:   13px;
+                                wrap:        word-wrap;
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 4px;
+
+                            Text {
+                                text:        "descripción";
+                                color:       Tema.etiqueta;
+                                font-family: "Courier New";
+                                font-size:   11px;
+                            }
+                            Text {
+                                text:        root.req-preview.description;
+                                color:       Tema.primario;
+                                font-family: "Courier New";
+                                font-size:   13px;
+                                wrap:        word-wrap;
+                            }
+                        }
+                    }
+
+                    Rectangle { vertical-stretch: 1; background: transparent; }
+                }
+            }
+        }
+    }
+}

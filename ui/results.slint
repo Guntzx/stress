@@ -1,0 +1,296 @@
+// results.slint — Tab 4: Resultados
+// Tabla de resultados, métricas resumen y gráfico ASCII de tiempos
+
+import {
+    Tema, AppCard, AppButton, AppBadge, ResultItemData
+} from "components.slint";
+
+export component TabResultados inherits Rectangle {
+    // ── Datos de resultados ──────────────────────────────────────────
+    in-out property <[ResultItemData]> resultados: [];
+
+    // ── Métricas resumen ─────────────────────────────────────────────
+    in property <string> res-total:    "0";
+    in property <string> res-tasa:     "0%";
+    in property <string> res-avg:      "0ms";
+    in property <string> res-max:      "0ms";
+    in property <string> res-min:      "0ms";
+    in property <string> res-p95:      "0ms";
+    in property <string> res-p99:      "0ms";
+
+    // ── Gráfico ASCII ────────────────────────────────────────────────
+    in property <string> ascii-chart:  "// sin datos de resultados";
+
+    // ── Callbacks hacia Rust ─────────────────────────────────────────
+    callback exportar-excel();
+    callback limpiar-resultados();
+
+    background: Tema.fondo-principal;
+
+    // Resultado seleccionado en la tabla
+    in-out property <int> resultado-idx: -1;
+
+    VerticalLayout {
+        padding:  14px;
+        spacing:  10px;
+
+        // ── Card ancha: tabla de resultados ──────────────────────────
+        AppCard {
+            titulo:          "RESULTADOS DE PRUEBA";
+            horizontal-stretch: 1;
+            height:          260px;
+
+            VerticalLayout {
+                spacing: 0px;
+
+                // Cabecera de tabla
+                Rectangle {
+                    height:     24px;
+                    background: #0a0700;
+
+                    HorizontalLayout {
+                        padding-left:  8px;
+                        padding-right: 8px;
+                        spacing:       0;
+
+                        Text { text: "ENDPOINT";     color: Tema.comentario; font-family: "Courier New"; font-size: 11px; font-weight: 700; horizontal-stretch: 1; vertical-alignment: center; }
+                        Text { text: "MÉT.";         color: Tema.comentario; font-family: "Courier New"; font-size: 11px; font-weight: 700; width: 64px;  vertical-alignment: center; }
+                        Text { text: "OK";           color: Tema.comentario; font-family: "Courier New"; font-size: 11px; font-weight: 700; width: 46px;  vertical-alignment: center; }
+                        Text { text: "ERR";          color: Tema.comentario; font-family: "Courier New"; font-size: 11px; font-weight: 700; width: 46px;  vertical-alignment: center; }
+                        Text { text: "PROMEDIO";     color: Tema.comentario; font-family: "Courier New"; font-size: 11px; font-weight: 700; width: 80px;  vertical-alignment: center; }
+                        Text { text: "MÁX";          color: Tema.comentario; font-family: "Courier New"; font-size: 11px; font-weight: 700; width: 70px;  vertical-alignment: center; }
+                        Text { text: "ÉXITO";        color: Tema.comentario; font-family: "Courier New"; font-size: 11px; font-weight: 700; width: 60px;  vertical-alignment: center; }
+                    }
+                }
+
+                // Filas de resultados
+                Rectangle {
+                    vertical-stretch: 1;
+                    clip:             true;
+
+                    VerticalLayout {
+                        spacing: 0px;
+
+                        for res[idx] in root.resultados: Rectangle {
+                            height:     30px;
+                            background: idx == root.resultado-idx
+                                ? #1a0f00
+                                : (res-ta.has-hover ? #100a00 : transparent);
+
+                            HorizontalLayout {
+                                padding-left:  8px;
+                                padding-right: 8px;
+                                spacing:       0;
+
+                                Text {
+                                    text:               res.request-name;
+                                    color:              Tema.primario;
+                                    font-family:        "Courier New";
+                                    font-size:          12px;
+                                    horizontal-stretch: 1;
+                                    vertical-alignment: center;
+                                    overflow:           elide;
+                                }
+                                AppBadge {
+                                    metodo: res.method;
+                                    width:  60px;
+                                    height: 20px;
+                                    y:      (parent.height - self.height) / 2;
+                                }
+                                Text {
+                                    text:               res.successful;
+                                    color:              #4a8a4a;
+                                    font-family:        "Courier New";
+                                    font-size:          12px;
+                                    width:              46px;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text:               res.failed;
+                                    color:              res.failed > 0 ? #8a3030 : Tema.comentario;
+                                    font-family:        "Courier New";
+                                    font-size:          12px;
+                                    width:              46px;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text:               round(res.avg-ms) + "ms";
+                                    color:              Tema.etiqueta;
+                                    font-family:        "Courier New";
+                                    font-size:          12px;
+                                    width:              80px;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text:               res.max-ms + "ms";
+                                    color:              Tema.etiqueta;
+                                    font-family:        "Courier New";
+                                    font-size:          12px;
+                                    width:              70px;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text:               round(res.success-rate * 100) + "%";
+                                    color:              res.success-rate >= 0.99 ? #4a8a4a
+                                                      : res.success-rate >= 0.90 ? Tema.etiqueta
+                                                      : #8a3030;
+                                    font-family:        "Courier New";
+                                    font-size:          12px;
+                                    width:              60px;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            // Separador inferior
+                            Rectangle {
+                                y:          parent.height - 1px;
+                                height:     1px;
+                                background: Tema.borde;
+                            }
+
+                            res-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.resultado-idx = idx; }
+                            }
+                        }
+
+                        // Mensaje cuando no hay resultados
+                        if root.resultados.length == 0: Rectangle {
+                            height: 80px;
+                            Text {
+                                text:                 "// Sin resultados — ejecuta una prueba para ver datos aquí";
+                                color:                Tema.comentario;
+                                font-family:          "Courier New";
+                                font-size:            12px;
+                                horizontal-alignment: center;
+                                vertical-alignment:   center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── 2 columnas: métricas | gráfico ASCII ─────────────────────
+        HorizontalLayout {
+            spacing:          10px;
+            vertical-stretch: 1;
+
+            // ── Columna izquierda — Métricas resumen ─────────────────
+            AppCard {
+                titulo:           "MÉTRICAS RESUMEN";
+                horizontal-stretch: 1;
+                vertical-stretch:  1;
+
+                VerticalLayout {
+                    spacing: 12px;
+                    alignment: start;
+
+                    // Métrica: total peticiones
+                    VerticalLayout {
+                        spacing: 2px;
+                        Text {
+                            text:        "total peticiones";
+                            color:       Tema.etiqueta;
+                            font-family: "Courier New";
+                            font-size:   11px;
+                        }
+                        Text {
+                            text:        root.res-total;
+                            color:       Tema.primario;
+                            font-family: "Courier New";
+                            font-size:   28px;
+                            font-weight: 700;
+                        }
+                    }
+
+                    // Métrica: tasa de éxito
+                    VerticalLayout {
+                        spacing: 2px;
+                        Text {
+                            text:        "tasa de éxito";
+                            color:       Tema.etiqueta;
+                            font-family: "Courier New";
+                            font-size:   11px;
+                        }
+                        Text {
+                            text:        root.res-tasa;
+                            color:       Tema.primario;
+                            font-family: "Courier New";
+                            font-size:   28px;
+                            font-weight: 700;
+                        }
+                    }
+
+                    // Métrica: tiempo promedio
+                    VerticalLayout {
+                        spacing: 2px;
+                        Text {
+                            text:        "tiempo promedio";
+                            color:       Tema.etiqueta;
+                            font-family: "Courier New";
+                            font-size:   11px;
+                        }
+                        Text {
+                            text:        root.res-avg;
+                            color:       Tema.primario;
+                            font-family: "Courier New";
+                            font-size:   28px;
+                            font-weight: 700;
+                        }
+                    }
+
+                    // Fila: min / max / p95 / p99
+                    HorizontalLayout {
+                        spacing: 14px;
+
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "mínimo";  color: Tema.etiqueta; font-family: "Courier New"; font-size: 11px; }
+                            Text { text: root.res-min; color: Tema.etiqueta; font-family: "Courier New"; font-size: 16px; font-weight: 700; }
+                        }
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "máximo";  color: Tema.etiqueta; font-family: "Courier New"; font-size: 11px; }
+                            Text { text: root.res-max; color: Tema.etiqueta; font-family: "Courier New"; font-size: 16px; font-weight: 700; }
+                        }
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "p95";     color: Tema.etiqueta; font-family: "Courier New"; font-size: 11px; }
+                            Text { text: root.res-p95; color: Tema.etiqueta; font-family: "Courier New"; font-size: 16px; font-weight: 700; }
+                        }
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "p99";     color: Tema.etiqueta; font-family: "Courier New"; font-size: 11px; }
+                            Text { text: root.res-p99; color: Tema.etiqueta; font-family: "Courier New"; font-size: 16px; font-weight: 700; }
+                        }
+                    }
+
+                    Rectangle { vertical-stretch: 1; background: transparent; }
+                }
+            }
+
+            // ── Columna derecha — Gráfico ASCII de distribución ──────
+            AppCard {
+                titulo:           "DISTRIBUCIÓN DE TIEMPOS";
+                horizontal-stretch: 1;
+                vertical-stretch:  1;
+
+                Rectangle {
+                    clip: true;
+                    vertical-stretch: 1;
+
+                    Text {
+                        text:        root.ascii-chart;
+                        color:       Tema.primario;
+                        font-family: "Courier New";
+                        font-size:   12px;
+                        wrap:        word-wrap;
+                        x:           0;
+                        y:           0;
+                    }
+                }
+            }
+        }
+    }
+}
