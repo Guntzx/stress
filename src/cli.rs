@@ -130,56 +130,6 @@ pub fn uninstall() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Versión sin prompt interactivo para llamar desde la GUI.
-pub fn uninstall_silent() -> Result<(), Box<dyn std::error::Error>> {
-    let install_path = get_install_path();
-
-    if !install_path.exists() {
-        return Err(format!("No se encontró stress en {}", install_path.display()).into());
-    }
-
-    match std::fs::remove_file(&install_path) {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-            #[cfg(unix)]
-            {
-                let status = std::process::Command::new("sudo")
-                    .arg("rm")
-                    .arg("-f")
-                    .arg(&install_path)
-                    .status()?;
-                if !status.success() {
-                    return Err(format!(
-                        "No se pudo eliminar {}. Intenta: sudo rm {}",
-                        install_path.display(),
-                        install_path.display()
-                    ).into());
-                }
-            }
-            #[cfg(not(unix))]
-            return Err(e.into());
-        }
-        Err(e) => return Err(e.into()),
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(dir) = install_path.parent() {
-            let ps_cmd = format!(
-                "$p = [Environment]::GetEnvironmentVariable('PATH','User'); \
-                 $new = ($p -split ';' | Where-Object {{ $_ -ne '{}' }}) -join ';'; \
-                 [Environment]::SetEnvironmentVariable('PATH', $new, 'User')",
-                dir.display()
-            );
-            let _ = std::process::Command::new("powershell")
-                .args(["-NoProfile", "-Command", &ps_cmd])
-                .status();
-        }
-    }
-
-    Ok(())
-}
-
 // ── stress update ─────────────────────────────────────────────────────────────
 
 pub async fn update() -> Result<(), Box<dyn std::error::Error>> {

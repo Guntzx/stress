@@ -1,0 +1,501 @@
+// ============================================================
+// components.slint — Componentes reutilizables del tema ámbar CRT
+// Paleta inspirada en terminales CRT de fósforo ámbar de los 80s
+// ============================================================
+
+// --- Structs compartidos con Rust ---
+
+// Ítem de configuración guardada
+export struct ConfigItemData {
+    name: string,
+    created-at: string,
+    request-count: int,
+    is-suite: bool,
+}
+
+// Ítem de resultado de prueba
+export struct ResultItemData {
+    request-name: string,
+    method: string,
+    total-requests: int,
+    successful: int,
+    failed: int,
+    avg-ms: float,
+    max-ms: int,
+    success-rate: float,
+}
+
+// Petición dentro de la suite
+export struct SuiteRequestData {
+    method: string,
+    endpoint: string,
+    description: string,
+}
+
+// --- Paleta global de colores del tema ---
+export global Tema {
+    // Fondos
+    out property <color> fondo-principal:  #0c0800;
+    out property <color> fondo-card:       #080500;
+    // Bordes
+    out property <color> borde:            #3a2500;
+    out property <color> borde-focus:      #ef9f27;
+    // Textos
+    out property <color> primario:         #ffffff;
+    out property <color> etiqueta:         #cccccc;
+    out property <color> comentario:       #777777;
+    out property <color> titulo-prefijo:   #aaaaaa;
+    // Botones
+    out property <color> btn-primario-bg:  #1a0f00;
+    out property <color> btn-hover-bg:     #2a1800;
+    // Colores por método HTTP
+    out property <color> col-get:          #ef9f27;
+    out property <color> col-post:         #4a8a4a;
+    out property <color> col-delete:       #8a3030;
+    out property <color> col-put:          #7a4a9a;
+    out property <color> col-patch:        #3a6a9a;
+}
+
+// ============================================================
+// AppCard — Contenedor con cabecera "//" y borde ámbar
+// ============================================================
+export component AppCard inherits Rectangle {
+    in property <string> titulo: "SECCIÓN";
+
+    background:    Tema.fondo-card;
+    border-color:  Tema.borde;
+    border-width:  1px;
+    border-radius: 3px;
+
+    VerticalLayout {
+        padding:  12px;
+        spacing:  8px;
+
+        // Cabecera: "// TÍTULO"
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+
+            Text {
+                text:        "//";
+                color:       Tema.titulo-prefijo;
+                font-family: "Courier New";
+                font-size:   13px;
+                font-weight: 700;
+            }
+            Text {
+                text:           titulo;
+                color:          Tema.primario;
+                font-family:    "Courier New";
+                font-size:      13px;
+                font-weight:    700;
+                letter-spacing: 1px;
+            }
+        }
+
+        // Separador
+        Rectangle {
+            height:     1px;
+            background: Tema.borde;
+        }
+
+        // Contenido inyectado por el padre
+        @children
+    }
+}
+
+// ============================================================
+// AppInput — Campo de texto estilizado (simple o multilínea)
+// ============================================================
+export component AppInput inherits Rectangle {
+    in property <string>  etiqueta:  "";
+    in-out property <string> valor:  "";
+    in property <bool>  habilitado:  true;
+    in property <bool>  multilinea:  false;
+
+    background:    Tema.fondo-principal;
+    border-color:  ti.has-focus ? Tema.borde-focus : Tema.borde;
+    border-width:  1px;
+    border-radius: 2px;
+    height:        multilinea ? 110px : (etiqueta == "" ? 34px : 52px);
+
+    VerticalLayout {
+        padding:  5px;
+        spacing:  2px;
+
+        // Etiqueta opcional encima del campo
+        if etiqueta != "": Text {
+            text:        etiqueta;
+            color:       Tema.etiqueta;
+            font-family: "Courier New";
+            font-size:   11px;
+            font-weight: 700;
+        }
+
+        ti := TextInput {
+            text <=> root.valor;
+            color:              root.habilitado ? Tema.primario : Tema.comentario;
+            selection-background-color: #3a2500;
+            selection-foreground-color: #ffffff;
+            font-family:        "Courier New";
+            font-size:          13px;
+            enabled:            root.habilitado;
+            wrap:               root.multilinea ? word-wrap : no-wrap;
+            single-line:        !root.multilinea;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// ============================================================
+// AppButton — Botón primario o secundario con hover
+// ============================================================
+export component AppButton inherits Rectangle {
+    in property <string> texto:      "Botón";
+    in property <bool>   primario:   true;
+    in property <bool>   habilitado: true;
+
+    callback pulsado();
+
+    height:        34px;
+    min-width:     100px;
+    border-radius: 2px;
+    border-width:  1px;
+
+    // Color de fondo según hover y tipo
+    background: primario
+        ? (ta.has-hover && habilitado ? Tema.btn-hover-bg : Tema.btn-primario-bg)
+        : (ta.has-hover && habilitado ? #161000 : Tema.fondo-principal);
+
+    // Color de borde según hover y tipo
+    border-color: primario
+        ? Tema.primario
+        : (ta.has-hover && habilitado ? Tema.primario : Tema.borde);
+
+    opacity: habilitado ? 1.0 : 0.38;
+
+    Text {
+        text:           texto;
+        color:          primario ? Tema.primario : Tema.etiqueta;
+        font-family:    "Courier New";
+        font-size:      13px;
+        font-weight:    700;
+        letter-spacing: 0.5px;
+        horizontal-alignment: center;
+        vertical-alignment:   center;
+    }
+
+    ta := TouchArea {
+        enabled:      root.habilitado;
+        mouse-cursor: pointer;
+        clicked => { root.pulsado(); }
+    }
+}
+
+// ============================================================
+// AppCheckbox — Checkbox con etiqueta, estados on/off
+// ============================================================
+export component AppCheckbox inherits Rectangle {
+    in property <string> texto:      "";
+    in-out property <bool> marcado:  false;
+    in property <bool>   habilitado: true;
+
+    callback cambiado(bool);
+
+    height:     26px;
+    background: transparent;
+
+    HorizontalLayout {
+        spacing:   8px;
+        alignment: start;
+
+        // Caja visual del checkbox
+        Rectangle {
+            width:         16px;
+            height:        16px;
+            y:             (parent.height - self.height) / 2;
+            background:    Tema.fondo-principal;
+            border-color:  root.marcado ? Tema.primario : Tema.borde;
+            border-width:  1px;
+            border-radius: 2px;
+
+            // Marca de verificación
+            if root.marcado: Text {
+                text:                "x";
+                color:               Tema.primario;
+                font-family:         "Courier New";
+                font-size:           12px;
+                font-weight:         700;
+                horizontal-alignment: center;
+                vertical-alignment:   center;
+                width:               parent.width;
+                height:              parent.height;
+            }
+        }
+
+        Text {
+            text:        texto;
+            color:       habilitado ? Tema.etiqueta : Tema.comentario;
+            font-family: "Courier New";
+            font-size:   13px;
+            vertical-alignment: center;
+        }
+    }
+
+    ta := TouchArea {
+        enabled:      root.habilitado;
+        mouse-cursor: pointer;
+        clicked => {
+            root.marcado = !root.marcado;
+            root.cambiado(root.marcado);
+        }
+    }
+}
+
+// ============================================================
+// AppBadge — Badge de método HTTP con color por método
+// ============================================================
+export component AppBadge inherits Rectangle {
+    in property <string> metodo: "GET";
+
+    height:        22px;
+    min-width:     58px;
+    background:    Tema.fondo-principal;
+    border-radius: 2px;
+    border-width:  1px;
+
+    // Color de borde según método
+    border-color:
+        metodo == "GET"    ? Tema.col-get    :
+        metodo == "POST"   ? Tema.col-post   :
+        metodo == "DELETE" ? Tema.col-delete :
+        metodo == "PUT"    ? Tema.col-put    :
+        metodo == "PATCH"  ? Tema.col-patch  : Tema.borde;
+
+    Text {
+        text:           metodo;
+        color:
+            metodo == "GET"    ? Tema.col-get    :
+            metodo == "POST"   ? Tema.col-post   :
+            metodo == "DELETE" ? Tema.col-delete :
+            metodo == "PUT"    ? Tema.col-put    :
+            metodo == "PATCH"  ? Tema.col-patch  : Tema.primario;
+        font-family:    "Courier New";
+        font-size:      11px;
+        font-weight:    700;
+        letter-spacing: 0.5px;
+        horizontal-alignment: center;
+        vertical-alignment:   center;
+    }
+}
+
+// ============================================================
+// AppSelect — Dropdown estilizado con popup personalizado
+// ============================================================
+export component AppSelect inherits Rectangle {
+    in property <[string]>  opciones:      [];
+    in-out property <int>   indice-actual: 0;
+    in property <bool>      habilitado:    true;
+    in property <string>    etiqueta:      "";
+
+    out property <string> valor-actual:
+        (opciones.length > 0 && indice-actual >= 0 && indice-actual < opciones.length)
+        ? opciones[indice-actual] : "";
+
+    callback seleccionado(int, string);
+
+    background:    Tema.fondo-principal;
+    border-color:  ta.has-hover ? Tema.borde-focus : Tema.borde;
+    border-width:  1px;
+    border-radius: 2px;
+    height:        etiqueta == "" ? 34px : 52px;
+    clip:          false;
+
+    VerticalLayout {
+        padding: 5px;
+        spacing: 2px;
+
+        if etiqueta != "": Text {
+            text:        etiqueta;
+            color:       Tema.etiqueta;
+            font-family: "Courier New";
+            font-size:   11px;
+            font-weight: 700;
+        }
+
+        HorizontalLayout {
+            Text {
+                text:               root.valor-actual;
+                color:              root.habilitado ? Tema.primario : Tema.comentario;
+                font-family:        "Courier New";
+                font-size:          13px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow:           elide;
+            }
+            Text {
+                text:               " ▼ ";
+                color:              Tema.etiqueta;
+                font-family:        "Courier New";
+                font-size:          11px;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    ta := TouchArea {
+        enabled:      root.habilitado;
+        mouse-cursor: pointer;
+        clicked => { popup.show(); }
+    }
+
+    // Popup flotante con las opciones
+    popup := PopupWindow {
+        x:              0;
+        y:              root.height;
+        width:          root.width;
+        close-policy: no-auto-close;
+
+        Rectangle {
+            background:   #080500;
+            border-color: #3a2500;
+            border-width: 1px;
+
+            VerticalLayout {
+                for item[idx] in root.opciones: Rectangle {
+                    height: 28px;
+
+                    item-ta := TouchArea {
+                        clicked => {
+                            root.indice-actual = idx;
+                            root.seleccionado(idx, item);
+                            popup.close();
+                        }
+                    }
+
+                    background: item-ta.has-hover ? #1a0f00 : #080500;
+
+                    Text {
+                        text:        item;
+                        color:       #ffffff;
+                        font-family: "Courier New";
+                        font-size:   13px;
+                        x:           8px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
+// StatusBar — Barra inferior con estado y progreso ASCII
+// ============================================================
+export component StatusBar inherits Rectangle {
+    in property <string> estado:        "IDLE";
+    in property <string> barra-texto:   "░░░░░░░░░░ 0%";
+    in property <bool>   ejecutando:    false;
+
+    height:     38px;
+    background: #080500;
+    border-color: #3a2500;
+    border-width: 1px;
+
+    HorizontalLayout {
+        padding-left:  14px;
+        padding-right: 14px;
+        spacing:       16px;
+        alignment:     start;
+
+        // Punto de estado animado
+        Rectangle {
+            width:         8px;
+            height:        8px;
+            border-radius: 4px;
+            background:    ejecutando ? #ef9f27 : #3a2500;
+            y:             (parent.height - self.height) / 2;
+        }
+
+        // Texto de estado
+        Text {
+            text:               estado;
+            color:              ejecutando ? #ffffff : #777777;
+            font-family:        "Courier New";
+            font-size:          12px;
+            font-weight:        700;
+            letter-spacing:     2px;
+            vertical-alignment: center;
+        }
+
+        // Separador
+        Text {
+            text:               "│";
+            color:              #3a2500;
+            font-family:        "Courier New";
+            font-size:          13px;
+            vertical-alignment: center;
+        }
+
+        // Barra de progreso ASCII
+        Text {
+            text:               barra-texto;
+            color:              #ffffff;
+            font-family:        "Courier New";
+            font-size:          12px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// ============================================================
+// AppTabs — Tabs horizontales con estado activo/inactivo
+// ============================================================
+export component AppTabs inherits Rectangle {
+    in property <[string]>  tabs:        [];
+    in-out property <int>   tab-activo:  0;
+
+    callback tab-cambiado(int);
+
+    height:     36px;
+    background: #080500;
+    border-color: #3a2500;
+    border-width: 1px;
+
+    HorizontalLayout {
+        spacing: 0px;
+
+        for tab[idx] in tabs: Rectangle {
+            width: 170px;
+
+            background: idx == tab-activo ? #1a0f00 : transparent;
+
+            // Línea indicadora inferior (tab activo)
+            Rectangle {
+                y:          parent.height - 2px;
+                height:     2px;
+                width:      parent.width;
+                background: idx == tab-activo ? #ef9f27 : transparent;
+            }
+
+            Text {
+                text:                 tab;
+                color:                idx == tab-activo ? #ffffff : #aaaaaa;
+                font-family:          "Courier New";
+                font-size:            12px;
+                font-weight:          idx == tab-activo ? 700 : 400;
+                letter-spacing:       0.5px;
+                horizontal-alignment: center;
+                vertical-alignment:   center;
+            }
+
+            tab-ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    root.tab-activo = idx;
+                    root.tab-cambiado(idx);
+                }
+            }
+        }
+    }
+}
