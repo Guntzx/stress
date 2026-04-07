@@ -1,0 +1,180 @@
+// general.slint — Tab 5: Opciones Generales
+// Configuración de red, reportes y apariencia
+
+import {
+    Tema, AppCard, AppInput, AppButton, AppCheckbox
+} from "components.slint";
+
+export component TabGeneral inherits Rectangle {
+    // ── Red ──────────────────────────────────────────────────────────
+    in-out property <string> proxy-url:      "";
+    in-out property <string> timeout-global: "30";
+    in-out property <string> reintentos:     "0";
+
+    // ── Reportes ─────────────────────────────────────────────────────
+    in-out property <string> dir-reportes:    "./reports";
+    in-out property <string> prefijo-reporte: "report";
+
+    // ── Apariencia ───────────────────────────────────────────────────
+    in-out property <bool>   monitoreo:       false;
+
+    // ── Callbacks hacia Rust ─────────────────────────────────────────
+    callback guardar-general();
+    callback seleccionar-dir-reportes();
+
+    background: Tema.fondo-principal;
+
+    VerticalLayout {
+        padding:  14px;
+        spacing:  10px;
+
+        // ── Fila superior: Red | Reportes ────────────────────────────
+        HorizontalLayout {
+            spacing: 10px;
+
+            // ── Card izquierda — Configuración de Red ────────────────
+            AppCard {
+                titulo:           "RED";
+                horizontal-stretch: 1;
+                height:           190px;
+
+                VerticalLayout {
+                    spacing: 8px;
+
+                    AppInput {
+                        etiqueta: "PROXY (URL, vacío para deshabilitar)";
+                        valor <=> root.proxy-url;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 6px;
+
+                        AppInput {
+                            etiqueta:           "TIMEOUT GLOBAL (s)";
+                            valor <=>           root.timeout-global;
+                            horizontal-stretch: 1;
+                        }
+                        AppInput {
+                            etiqueta:           "REINTENTOS";
+                            valor <=>           root.reintentos;
+                            horizontal-stretch: 1;
+                        }
+                    }
+
+                    Text {
+                        text:        "// el proxy y timeout global aplican a\n// todas las peticiones HTTP de la app";
+                        color:       Tema.comentario;
+                        font-family: "Courier New";
+                        font-size:   11px;
+                        wrap:        word-wrap;
+                    }
+
+                    Rectangle { vertical-stretch: 1; background: transparent; }
+                }
+            }
+
+            // ── Card derecha — Configuración de Reportes ─────────────
+            AppCard {
+                titulo:           "REPORTES";
+                horizontal-stretch: 1;
+                height:           190px;
+
+                VerticalLayout {
+                    spacing: 8px;
+
+                    // Directorio de reportes con browse
+                    HorizontalLayout {
+                        spacing: 6px;
+                        alignment: end;
+
+                        AppInput {
+                            etiqueta:           "DIR. POR DEFECTO";
+                            valor <=>           root.dir-reportes;
+                            horizontal-stretch: 1;
+                        }
+                        AppButton {
+                            texto:    "[…]";
+                            primario: false;
+                            width:    48px;
+                            height:   34px;
+                            pulsado() => { root.seleccionar-dir-reportes(); }
+                        }
+                    }
+
+                    AppInput {
+                        etiqueta: "PREFIJO DE NOMBRE";
+                        valor <=> root.prefijo-reporte;
+                    }
+
+                    Text {
+                        text:        "// los archivos Excel se guardan como:\n// {prefijo}_{nombre}_{timestamp}.xlsx";
+                        color:       Tema.comentario;
+                        font-family: "Courier New";
+                        font-size:   11px;
+                        wrap:        word-wrap;
+                    }
+
+                    Rectangle { vertical-stretch: 1; background: transparent; }
+                }
+            }
+        }
+
+        // ── Card Apariencia / Monitor ────────────────────────────────
+        AppCard {
+            titulo: "APARIENCIA Y MONITOREO";
+            height: 120px;
+
+            VerticalLayout {
+                spacing: 10px;
+
+                AppCheckbox {
+                    texto:   "Habilitar monitoreo de sistema (CPU, RAM) en tiempo real";
+                    marcado <=> root.monitoreo;
+                }
+
+                Text {
+                    text:        "// el monitoreo consume recursos adicionales;\n// desactívalo si no lo necesitas";
+                    color:       Tema.comentario;
+                    font-family: "Courier New";
+                    font-size:   11px;
+                    wrap:        word-wrap;
+                }
+
+                Rectangle { vertical-stretch: 1; background: transparent; }
+            }
+        }
+
+        // ── Card Información de versión ──────────────────────────────
+        AppCard {
+            titulo: "INFORMACIÓN";
+            height: 90px;
+
+            VerticalLayout {
+                spacing: 6px;
+
+                HorizontalLayout {
+                    spacing: 20px;
+
+                    VerticalLayout {
+                        spacing: 2px;
+                        Text { text: "versión";  color: Tema.etiqueta; font-family: "Courier New"; font-size: 11px; }
+                        Text { text: "1.2.0";    color: Tema.primario; font-family: "Courier New"; font-size: 14px; font-weight: 700; }
+                    }
+                    VerticalLayout {
+                        spacing: 2px;
+                        Text { text: "plataforma"; color: Tema.etiqueta; font-family: "Courier New"; font-size: 11px; }
+                        Text { text: "Windows";    color: Tema.primario; font-family: "Courier New"; font-size: 14px; font-weight: 700; }
+                    }
+                    VerticalLayout {
+                        spacing: 2px;
+                        Text { text: "motor UI";  color: Tema.etiqueta; font-family: "Courier New"; font-size: 11px; }
+                        Text { text: "Slint 1.x"; color: Tema.primario; font-family: "Courier New"; font-size: 14px; font-weight: 700; }
+                    }
+                }
+            }
+        }
+
+        // Espaciador
+        Rectangle { vertical-stretch: 1; background: transparent; }
+    }
+}
