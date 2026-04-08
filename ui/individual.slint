@@ -3,7 +3,7 @@
 
 import {
     Tema, AppCard, AppInput, AppButton,
-    AppCheckbox, AppBadge, AppSelect
+    AppCheckbox, AppBadge, AppSelect, HeaderRowData
 } from "components.slint";
 
 export component TabIndividual inherits Rectangle {
@@ -25,13 +25,20 @@ export component TabIndividual inherits Rectangle {
     in-out property <int>      metodo-idx:           0;
     in-out property <string>   endpoint:             "/";
     in-out property <string>   descripcion:          "";
-    in-out property <string>   headers-json:         "{}";
-    in-out property <string>   body-json:            "{}";
+    in-out property <string>           headers-json:  "{}";
+    in-out property <string>           body-json:     "{}";
+    in-out property <[HeaderRowData]>  headers-filas: [];
+    in-out property <int>              headers-modo:  0; // 0=Key-Value  1=JSON
 
     // ── Callbacks hacia Rust ─────────────────────────────────────────
     callback cargar-config(int);
     callback seleccionar-dir-salida();
     callback seleccionar-dir-remota();
+    callback header-agregar();
+    callback header-eliminar(int);
+    callback header-toggle-enabled(int);
+    callback header-set-key(int, string);
+    callback header-set-value(int, string);
 
     // Método HTTP actual como texto (para el badge de color)
     property <string> metodo-texto:
@@ -207,10 +214,223 @@ export component TabIndividual inherits Rectangle {
                         valor <=> root.descripcion;
                     }
 
-                    AppInput {
-                        etiqueta:   "HEADERS (JSON)";
-                        valor <=>   root.headers-json;
-                        multilinea: true;
+                    // ── Selector de modo de headers ──────────────
+                    VerticalLayout {
+                        spacing: 5px;
+
+                        // Etiqueta + tabs de modo
+                        HorizontalLayout {
+                            spacing: 10px;
+                            alignment: start;
+
+                            Text {
+                                text:        "HEADERS";
+                                color:       Tema.etiqueta;
+                                font-family: "Courier New";
+                                font-size:   11px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+
+                            // Tab KEY-VALUE (por defecto)
+                            Rectangle {
+                                width:         86px;
+                                height:        20px;
+                                background:    root.headers-modo == 0 ? #1a0f00 : transparent;
+                                border-color:  root.headers-modo == 0 ? Tema.primario : Tema.borde;
+                                border-width:  1px;
+                                border-radius: 2px;
+
+                                Text {
+                                    text:                 "KEY-VALUE";
+                                    color:                root.headers-modo == 0 ? Tema.primario : Tema.comentario;
+                                    font-family:          "Courier New";
+                                    font-size:            11px;
+                                    font-weight:          700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment:   center;
+                                }
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.headers-modo = 0; }
+                                }
+                            }
+
+                            // Tab JSON
+                            Rectangle {
+                                width:         46px;
+                                height:        20px;
+                                background:    root.headers-modo == 1 ? #1a0f00 : transparent;
+                                border-color:  root.headers-modo == 1 ? Tema.primario : Tema.borde;
+                                border-width:  1px;
+                                border-radius: 2px;
+
+                                Text {
+                                    text:                 "JSON";
+                                    color:                root.headers-modo == 1 ? Tema.primario : Tema.comentario;
+                                    font-family:          "Courier New";
+                                    font-size:            11px;
+                                    font-weight:          700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment:   center;
+                                }
+                                TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.headers-modo = 1; }
+                                }
+                            }
+                        }
+
+                        // ── Modo KEY-VALUE ────────────────────────────
+                        if root.headers-modo == 0: VerticalLayout {
+                            spacing: 3px;
+
+                            // Cabecera de columnas
+                            HorizontalLayout {
+                                spacing: 4px;
+                                padding-left:  24px;
+                                padding-right: 30px;
+
+                                Text {
+                                    text:               "KEY";
+                                    color:              Tema.comentario;
+                                    font-family:        "Courier New";
+                                    font-size:          10px;
+                                    font-weight:        700;
+                                    horizontal-stretch: 1;
+                                }
+                                Text {
+                                    text:               "VALUE";
+                                    color:              Tema.comentario;
+                                    font-family:        "Courier New";
+                                    font-size:          10px;
+                                    font-weight:        700;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+
+                            // Filas editables
+                            for item[idx] in root.headers-filas: HorizontalLayout {
+                                spacing: 4px;
+                                height:  28px;
+
+                                // Checkbox enabled
+                                chk := Rectangle {
+                                    width:         18px;
+                                    height:        18px;
+                                    y:             (parent.height - self.height) / 2;
+                                    background:    Tema.fondo-principal;
+                                    border-color:  item.enabled ? Tema.primario : Tema.borde;
+                                    border-width:  1px;
+                                    border-radius: 2px;
+
+                                    if item.enabled: Text {
+                                        text:                 "x";
+                                        color:                Tema.primario;
+                                        font-family:          "Courier New";
+                                        font-size:            11px;
+                                        font-weight:          700;
+                                        horizontal-alignment: center;
+                                        vertical-alignment:   center;
+                                    }
+                                    TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.header-toggle-enabled(idx); }
+                                    }
+                                }
+
+                                // Key
+                                key-rect := Rectangle {
+                                    horizontal-stretch: 1;
+                                    height:             24px;
+                                    y:                  (parent.height - self.height) / 2;
+                                    background:         Tema.fondo-principal;
+                                    border-color:       key-ti.has-focus ? Tema.borde-focus : Tema.borde;
+                                    border-width:       1px;
+                                    border-radius:      2px;
+                                    opacity:            item.enabled ? 1.0 : 0.4;
+
+                                    key-ti := TextInput {
+                                        x:                  5px;
+                                        width:              parent.width - 10px;
+                                        height:             parent.height;
+                                        text:               item.key;
+                                        color:              Tema.primario;
+                                        font-family:        "Courier New";
+                                        font-size:          12px;
+                                        vertical-alignment: center;
+                                        single-line:        true;
+                                        enabled:            item.enabled;
+                                        edited() => { root.header-set-key(idx, key-ti.text); }
+                                    }
+                                }
+
+                                // Value
+                                val-rect := Rectangle {
+                                    horizontal-stretch: 1;
+                                    height:             24px;
+                                    y:                  (parent.height - self.height) / 2;
+                                    background:         Tema.fondo-principal;
+                                    border-color:       val-ti.has-focus ? Tema.borde-focus : Tema.borde;
+                                    border-width:       1px;
+                                    border-radius:      2px;
+                                    opacity:            item.enabled ? 1.0 : 0.4;
+
+                                    val-ti := TextInput {
+                                        x:                  5px;
+                                        width:              parent.width - 10px;
+                                        height:             parent.height;
+                                        text:               item.value;
+                                        color:              Tema.primario;
+                                        font-family:        "Courier New";
+                                        font-size:          12px;
+                                        vertical-alignment: center;
+                                        single-line:        true;
+                                        enabled:            item.enabled;
+                                        edited() => { root.header-set-value(idx, val-ti.text); }
+                                    }
+                                }
+
+                                // Botón eliminar fila
+                                Rectangle {
+                                    width:         22px;
+                                    height:        22px;
+                                    y:             (parent.height - self.height) / 2;
+                                    background:    transparent;
+                                    border-color:  del-ta.has-hover ? Tema.primario : Tema.borde;
+                                    border-width:  1px;
+                                    border-radius: 2px;
+
+                                    Text {
+                                        text:                 "×";
+                                        color:                #aaaaaa;
+                                        font-family:          "Courier New";
+                                        font-size:            13px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment:   center;
+                                    }
+                                    del-ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.header-eliminar(idx); }
+                                    }
+                                }
+                            }
+
+                            // Botón añadir header
+                            AppButton {
+                                texto:    "+ HEADER";
+                                primario: false;
+                                width:    90px;
+                                height:   24px;
+                                pulsado() => { root.header-agregar(); }
+                            }
+                        }
+
+                        // ── Modo JSON ─────────────────────────────────
+                        if root.headers-modo == 1: AppInput {
+                            valor <=>   root.headers-json;
+                            multilinea: true;
+                        }
                     }
 
                     AppInput {

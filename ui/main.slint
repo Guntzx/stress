@@ -4,7 +4,7 @@
 
 import {
     Tema, AppTabs, AppButton, StatusBar,
-    ConfigItemData, ResultItemData, SuiteRequestData
+    ConfigItemData, ResultItemData, SuiteRequestData, HeaderRowData
 } from "components.slint";
 
 import { TabIndividual }  from "individual.slint";
@@ -52,8 +52,10 @@ export component AppWindow inherits Window {
     in-out property <int>      metodo-idx:              0;
     in-out property <string>   endpoint:                "/";
     in-out property <string>   descripcion:             "";
-    in-out property <string>   headers-json:            "{}";
-    in-out property <string>   body-json:               "{}";
+    in-out property <string>           headers-json:   "{}";
+    in-out property <string>           body-json:      "{}";
+    in-out property <[HeaderRowData]>  headers-filas:  [];
+    in-out property <int>              headers-modo:   0;
 
     // ====================================================================
     // PROPIEDADES — TAB 2: SUITE
@@ -107,6 +109,11 @@ export component AppWindow inherits Window {
     callback seleccionar-dir-remota();
     callback cargar-config(int);
     callback guardar-config();
+    callback header-agregar();
+    callback header-eliminar(int);
+    callback header-toggle-enabled(int);
+    callback header-set-key(int, string);
+    callback header-set-value(int, string);
 
     // Tab 2 — Suite
     callback suite-agregar();
@@ -291,9 +298,16 @@ export component AppWindow inherits Window {
                 descripcion             <=> root.descripcion;
                 headers-json            <=> root.headers-json;
                 body-json               <=> root.body-json;
-                cargar-config(i)        => { root.cargar-config(i); }
-                seleccionar-dir-salida()  => { root.seleccionar-dir-salida(); }
-                seleccionar-dir-remota()  => { root.seleccionar-dir-remota(); }
+                headers-filas           <=> root.headers-filas;
+                headers-modo            <=> root.headers-modo;
+                cargar-config(i)              => { root.cargar-config(i); }
+                seleccionar-dir-salida()      => { root.seleccionar-dir-salida(); }
+                seleccionar-dir-remota()      => { root.seleccionar-dir-remota(); }
+                header-agregar()              => { root.header-agregar(); }
+                header-eliminar(i)            => { root.header-eliminar(i); }
+                header-toggle-enabled(i)      => { root.header-toggle-enabled(i); }
+                header-set-key(i, k)          => { root.header-set-key(i, k); }
+                header-set-value(i, v)        => { root.header-set-value(i, v); }
             }
 
             // Tab 1 — Suite de Pruebas

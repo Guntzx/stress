@@ -32,6 +32,13 @@ export struct SuiteRequestData {
     description: string,
 }
 
+// Fila de header key-value (modo Postman)
+export struct HeaderRowData {
+    key:     string,
+    value:   string,
+    enabled: bool,
+}
+
 // --- Paleta global de colores del tema ---
 export global Tema {
     // Fondos
@@ -351,10 +358,10 @@ export component AppSelect inherits Rectangle {
 
     // Popup flotante con las opciones
     popup := PopupWindow {
-        x:              0;
-        y:              root.height;
-        width:          root.width;
-        close-policy: no-auto-close;
+        x:            0;
+        y:            root.height;
+        width:        max(root.width, 220px);  // ancho mínimo para que el texto no se corte
+        close-policy: close-on-click-outside;  // cierra al hacer click fuera
 
         Rectangle {
             background:   #080500;
@@ -381,6 +388,8 @@ export component AppSelect inherits Rectangle {
                         font-family: "Courier New";
                         font-size:   13px;
                         x:           8px;
+                        overflow:    elide;
+                        width:       parent.width - 16px;
                         vertical-alignment: center;
                     }
                 }
