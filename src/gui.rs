@@ -63,6 +63,113 @@ pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     // ── Carga inicial de datos en la UI ───────────────────────────────────────
     populate_initial_data(&window);
 
+    // ── Verificación de actualizaciones en background al iniciar ─────────────
+    {
+        let window_weak = window.as_weak();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+            if let Some(latest) = rt.block_on(crate::cli::get_latest_version()) {
+                slint::invoke_from_event_loop(move || {
+                    if let Some(w) = window_weak.upgrade() {
+                        w.set_update_version(latest.into());
+                        w.set_update_disponible(true);
+                    }
+                }).ok();
+            }
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CALLBACKS — Actualizaciones y sistema
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Buscar actualizaciones manualmente
+    window.on_buscar_actualizacion({
+        let window_weak = window.as_weak();
+        move || {
+            if let Some(w) = window_weak.upgrade() {
+                w.set_update_estado("Buscando...".into());
+            }
+            let window_weak = window_weak.clone();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+                let result = rt.block_on(crate::cli::get_latest_version());
+                slint::invoke_from_event_loop(move || {
+                    if let Some(w) = window_weak.upgrade() {
+                        match result {
+                            Some(latest) => {
+                                w.set_update_version(latest.into());
+                                w.set_update_disponible(true);
+                                w.set_update_estado("".into());
+                            }
+                            None => {
+                                w.set_update_estado("Al dia. Ya tienes la ultima version.".into());
+                            }
+                        }
+                    }
+                }).ok();
+            });
+        }
+    });
+
+    // Actualizar la app desde la GUI
+    window.on_actualizar_app({
+        let window_weak = window.as_weak();
+        move || {
+            let window_weak = window_weak.clone();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+                let ww = window_weak.clone();
+                let result = rt.block_on(crate::cli::download_and_replace(move |msg| {
+                    let ww2 = ww.clone();
+                    slint::invoke_from_event_loop(move || {
+                        if let Some(w) = ww2.upgrade() {
+                            w.set_update_estado(msg.into());
+                        }
+                    }).ok();
+                }));
+                slint::invoke_from_event_loop(move || {
+                    if let Some(w) = window_weak.upgrade() {
+                        match result {
+                            Ok(true) => {
+                                w.set_update_disponible(false);
+                                w.set_update_estado("Actualizado. Reinicia la app.".into());
+                            }
+                            Ok(false) => {
+                                w.set_update_disponible(false);
+                                w.set_update_estado("Actualizado. Reinicia la app.".into());
+                            }
+                            Err(e) => {
+                                w.set_update_estado(format!("Error: {}", e).into());
+                            }
+                        }
+                    }
+                }).ok();
+            });
+        }
+    });
+
+    // Desinstalar la app desde la GUI
+    window.on_desinstalar_app({
+        let window_weak = window.as_weak();
+        move || {
+            match crate::cli::uninstall_silent() {
+                Ok(_) => {
+                    if let Some(w) = window_weak.upgrade() {
+                        w.set_update_estado("Desinstalado. Puedes cerrar la app.".into());
+                        w.set_update_disponible(true); // muestra el banner con el mensaje
+                    }
+                }
+                Err(e) => {
+                    if let Some(w) = window_weak.upgrade() {
+                        w.set_update_estado(format!("Error al desinstalar: {}", e).into());
+                        w.set_update_disponible(true);
+                    }
+                }
+            }
+        }
+    });
+
     // ─────────────────────────────────────────────────────────────────────────
     // CALLBACKS — Tab 0: Prueba Individual
     // ─────────────────────────────────────────────────────────────────────────

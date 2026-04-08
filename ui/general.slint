@@ -21,9 +21,17 @@ export component TabGeneral inherits Rectangle {
     // ── Información de la app ────────────────────────────────────────
     in property <string> version: "0.0.0";
 
+    // ── Actualización ────────────────────────────────────────────────
+    in-out property <bool>   update-disponible: false;
+    in property    <string>  update-version:    "";
+    in-out property <string> update-estado:     "";
+
     // ── Callbacks hacia Rust ─────────────────────────────────────────
     callback guardar-general();
     callback seleccionar-dir-reportes();
+    callback buscar-actualizacion();
+    callback actualizar-app();
+    callback desinstalar-app();
 
     background: Tema.fondo-principal;
 
@@ -147,31 +155,126 @@ export component TabGeneral inherits Rectangle {
             }
         }
 
-        // ── Card Información de versión ──────────────────────────────
-        AppCard {
-            titulo: "INFORMACIÓN";
-            height: 90px;
+        // ── Fila inferior: Información | Actualizaciones ─────────────
+        HorizontalLayout {
+            spacing: 10px;
 
-            VerticalLayout {
-                spacing: 6px;
+            // ── Card Información de versión ──────────────────────────
+            AppCard {
+                titulo:           "INFORMACIÓN";
+                horizontal-stretch: 1;
+                height:           90px;
 
-                HorizontalLayout {
-                    spacing: 20px;
+                VerticalLayout {
+                    spacing: 6px;
 
-                    VerticalLayout {
-                        spacing: 2px;
-                        Text { text: "versión";  color: Tema.etiqueta; font-family: "Courier New"; font-size: 11px; }
-                        Text { text: root.version; color: Tema.primario; font-family: "Courier New"; font-size: 14px; font-weight: 700; }
+                    HorizontalLayout {
+                        spacing: 20px;
+
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "versión";  color: Tema.etiqueta; font-family: "Courier New"; font-size: 11px; }
+                            Text { text: root.version; color: Tema.primario; font-family: "Courier New"; font-size: 14px; font-weight: 700; }
+                        }
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "motor UI";  color: Tema.etiqueta; font-family: "Courier New"; font-size: 11px; }
+                            Text { text: "Slint 1.x"; color: Tema.primario; font-family: "Courier New"; font-size: 14px; font-weight: 700; }
+                        }
                     }
-                    VerticalLayout {
-                        spacing: 2px;
-                        Text { text: "plataforma"; color: Tema.etiqueta; font-family: "Courier New"; font-size: 11px; }
-                        Text { text: "Windows";    color: Tema.primario; font-family: "Courier New"; font-size: 14px; font-weight: 700; }
+
+                    Rectangle { vertical-stretch: 1; background: transparent; }
+                }
+            }
+
+            // ── Card Actualizaciones ─────────────────────────────────
+            upd-card := AppCard {
+                titulo:           "ACTUALIZACIONES";
+                horizontal-stretch: 1;
+                height:           90px;
+
+                // Deshabilitar botones mientras hay una operación en curso
+                property <bool> ocupado: root.update-estado != "" &&
+                    root.update-estado != "Al dia. Ya tienes la ultima version." &&
+                    root.update-estado != "Actualizado. Reinicia la app.";
+
+                VerticalLayout {
+                    spacing: 8px;
+
+                    HorizontalLayout {
+                        spacing: 8px;
+
+                        AppButton {
+                            texto:      "BUSCAR";
+                            primario:   false;
+                            habilitado: !upd-card.ocupado;
+                            width:      90px;
+                            pulsado() => { root.buscar-actualizacion(); }
+                        }
+
+                        if root.update-disponible: AppButton {
+                            texto:      "ACTUALIZAR A v" + root.update-version;
+                            primario:   true;
+                            habilitado: !upd-card.ocupado;
+                            pulsado()  => { root.actualizar-app(); }
+                        }
                     }
-                    VerticalLayout {
-                        spacing: 2px;
-                        Text { text: "motor UI";  color: Tema.etiqueta; font-family: "Courier New"; font-size: 11px; }
-                        Text { text: "Slint 1.x"; color: Tema.primario; font-family: "Courier New"; font-size: 14px; font-weight: 700; }
+
+                    Text {
+                        text: root.update-estado != ""
+                            ? root.update-estado
+                            : (root.update-disponible
+                                ? "▲ v" + root.update-version + " disponible"
+                                : "// ejecuta 'buscar' para comprobar");
+                        color:       root.update-disponible && root.update-estado == ""
+                            ? #ef9f27
+                            : Tema.comentario;
+                        font-family: "Courier New";
+                        font-size:   11px;
+                        wrap:        word-wrap;
+                    }
+
+                    Rectangle { vertical-stretch: 1; background: transparent; }
+                }
+            }
+
+            // ── Card Sistema ─────────────────────────────────────────
+            sist-card := AppCard {
+                titulo: "SISTEMA";
+                width:  180px;
+                height: 90px;
+
+                // Estado de confirmación de desinstalación (2 pasos)
+                property <bool> confirmando: false;
+
+                VerticalLayout {
+                    spacing: 8px;
+
+                    AppButton {
+                        texto:    sist-card.confirmando ? "CONFIRMAR" : "DESINSTALAR";
+                        primario: sist-card.confirmando;
+                        pulsado() => {
+                            if (sist-card.confirmando) {
+                                root.desinstalar-app();
+                                sist-card.confirmando = false;
+                            } else {
+                                sist-card.confirmando = true;
+                            }
+                        }
+                    }
+
+                    if sist-card.confirmando: AppButton {
+                        texto:    "CANCELAR";
+                        primario: false;
+                        pulsado() => { sist-card.confirmando = false; }
+                    }
+
+                    if !sist-card.confirmando: Text {
+                        text:        "// elimina el binario\n// del sistema";
+                        color:       Tema.comentario;
+                        font-family: "Courier New";
+                        font-size:   11px;
+                        wrap:        word-wrap;
                     }
                 }
             }

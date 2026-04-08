@@ -45,6 +45,129 @@ fn is_newer_version(current: &str, latest: &str) -> bool {
     parse(latest) > parse(current)
 }
 
+// ── Verificación de versión (para la GUI) ────────────────────────────────────
+
+/// Consulta GitHub y retorna la última versión si es más nueva que la actual.
+/// Falla silenciosamente (retorna None) para no molestar al usuario con errores de red.
+pub async fn get_latest_version() -> Option<String> {
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("stress/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .ok()?;
+
+    let json: serde_json::Value = client
+        .get("https://api.github.com/repos/Guntzx/stress/releases/latest")
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+
+    let tag    = json["tag_name"].as_str()?;
+    let latest = tag.trim_start_matches('v').to_string();
+
+    if is_newer_version(env!("CARGO_PKG_VERSION"), &latest) { Some(latest) } else { None }
+}
+
+/// Descarga e instala la última versión, reportando progreso mediante el callback.
+/// Retorna Ok(true) si el reemplazo fue inmediato, Ok(false) si requiere reinicio.
+pub async fn download_and_replace<F>(on_status: F) -> Result<bool, String>
+where
+    F: Fn(String),
+{
+    on_status("Consultando GitHub...".into());
+
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("stress/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let json: serde_json::Value = client
+        .get("https://api.github.com/repos/Guntzx/stress/releases/latest")
+        .send().await.map_err(|e| e.to_string())?
+        .json().await.map_err(|e| e.to_string())?;
+
+    let tag    = json["tag_name"].as_str().ok_or("No se encontró tag_name")?;
+    let latest = tag.trim_start_matches('v');
+
+    let asset_name = get_release_asset_name();
+    let assets     = json["assets"].as_array().ok_or("No se encontraron assets")?;
+    let asset      = assets
+        .iter()
+        .find(|a| a["name"].as_str() == Some(asset_name))
+        .ok_or_else(|| format!("Asset '{}' no encontrado en el release", asset_name))?;
+
+    let download_url = asset["browser_download_url"]
+        .as_str()
+        .ok_or("URL de descarga no encontrada")?;
+
+    on_status(format!("Descargando v{}...", latest));
+
+    let bytes = client
+        .get(download_url)
+        .send().await.map_err(|e| e.to_string())?
+        .bytes().await.map_err(|e| e.to_string())?;
+
+    let install_path = get_install_path();
+    if let Some(parent) = install_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    let temp_path = install_path.with_extension("tmp");
+    fs::write(&temp_path, &bytes).map_err(|e| e.to_string())?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+    }
+
+    on_status("Instalando...".into());
+    let immediate = replace_binary_returning(&temp_path, &install_path)
+        .map_err(|e| e.to_string())?;
+
+    Ok(immediate)
+}
+
+/// Desinstala sin pedir confirmación por consola (para uso desde la GUI).
+pub fn uninstall_silent() -> Result<(), String> {
+    let install_path = get_install_path();
+
+    if !install_path.exists() {
+        return Err("No se encontró stress instalado en la ruta estándar.".into());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // En Windows el exe puede estar en uso; usar bat para eliminar al cerrar
+        let bat = format!(
+            "@echo off\r\n\
+             :loop\r\n\
+             timeout /t 1 /nobreak >nul\r\n\
+             del /f /q \"{dst}\" >nul 2>&1\r\n\
+             if exist \"{dst}\" goto loop\r\n\
+             del \"%~f0\"\r\n",
+            dst = install_path.display()
+        );
+        let bat_path = install_path.with_extension("uninstall.bat");
+        fs::write(&bat_path, bat).map_err(|e| e.to_string())?;
+        let bat_str = bat_path.to_str().unwrap_or("");
+        std::process::Command::new("cmd")
+            .arg("/c")
+            .arg(format!(r#"start "" /min "{}""#, bat_str))
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fs::remove_file(&install_path).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 // ── stress uninstall ─────────────────────────────────────────────────────────
 
 pub fn uninstall() -> Result<(), Box<dyn std::error::Error>> {
@@ -239,6 +362,45 @@ pub async fn update() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     Ok(())
+}
+
+// Igual que replace_binary pero retorna true si el reemplazo fue inmediato,
+// false si se programó para después del cierre (solo relevante en Windows).
+fn replace_binary_returning(
+    temp_path:    &std::path::Path,
+    install_path: &std::path::Path,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    #[cfg(target_os = "windows")]
+    {
+        match fs::rename(temp_path, install_path) {
+            Ok(_) => return Ok(true),
+            Err(_) => {
+                let bat = format!(
+                    "@echo off\r\n\
+                     :loop\r\n\
+                     timeout /t 1 /nobreak >nul\r\n\
+                     move /y \"{src}\" \"{dst}\" >nul 2>&1\r\n\
+                     if errorlevel 1 goto loop\r\n\
+                     del \"%~f0\"\r\n",
+                    src = temp_path.display(),
+                    dst = install_path.display()
+                );
+                let bat_path = temp_path.with_extension("bat");
+                fs::write(&bat_path, bat)?;
+                let bat_str = bat_path.to_str().unwrap_or("");
+                std::process::Command::new("cmd")
+                    .arg("/c")
+                    .arg(format!(r#"start "" /min "{}""#, bat_str))
+                    .spawn()?;
+                return Ok(false);
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        fs::rename(temp_path, install_path)?;
+        Ok(true)
+    }
 }
 
 // En Unix: rename directo funciona incluso sobre un binario en ejecución.
