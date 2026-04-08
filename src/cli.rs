@@ -265,8 +265,12 @@ fn replace_binary(
                 );
                 let bat_path = temp_path.with_extension("bat");
                 fs::write(&bat_path, bat)?;
+                // Construir el comando como string único para que cmd lo parsee
+                // correctamente. start requiere el título ("") antes de las flags.
+                let bat_str = bat_path.to_str().unwrap_or("");
                 std::process::Command::new("cmd")
-                    .args(["/c", "start", "/min", "\"\"", bat_path.to_str().unwrap_or("")])
+                    .arg("/c")
+                    .arg(format!(r#"start "" /min "{}""#, bat_str))
                     .spawn()?;
                 println!("[INFO] El reemplazo se aplicará al cerrar stress. Reinícialo.");
                 Ok(())
