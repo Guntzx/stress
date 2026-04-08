@@ -794,6 +794,7 @@ fn populate_initial_data(w: &AppWindow) {
     w.set_suite_requests(ModelRc::new(VecModel::from(vec![])));
     w.set_resultados(ModelRc::new(VecModel::from(vec![])));
     reset_metrics(w);
+    w.set_app_version(env!("CARGO_PKG_VERSION").into());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

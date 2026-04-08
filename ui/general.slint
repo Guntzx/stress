@@ -18,6 +18,9 @@ export component TabGeneral inherits Rectangle {
     // ── Apariencia ───────────────────────────────────────────────────
     in-out property <bool>   monitoreo:       false;
 
+    // ── Información de la app ────────────────────────────────────────
+    in property <string> version: "0.0.0";
+
     // ── Callbacks hacia Rust ─────────────────────────────────────────
     callback guardar-general();
     callback seleccionar-dir-reportes();
@@ -158,7 +161,7 @@ export component TabGeneral inherits Rectangle {
                     VerticalLayout {
                         spacing: 2px;
                         Text { text: "versión";  color: Tema.etiqueta; font-family: "Courier New"; font-size: 11px; }
-                        Text { text: "1.2.0";    color: Tema.primario; font-family: "Courier New"; font-size: 14px; font-weight: 700; }
+                        Text { text: root.version; color: Tema.primario; font-family: "Courier New"; font-size: 14px; font-weight: 700; }
                     }
                     VerticalLayout {
                         spacing: 2px;
