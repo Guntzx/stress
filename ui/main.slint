@@ -29,6 +29,7 @@ export component AppWindow inherits Window {
     in-out property <string> estado:          "IDLE";
     in-out property <string> barra-progreso:  "░░░░░░░░░░ 0%";
     in-out property <string> mensaje-estado:  "";
+    in property <string>     app-version:     "0.0.0";
 
     // ====================================================================
     // PROPIEDADES — TAB 1: INDIVIDUAL
@@ -276,6 +277,7 @@ export component AppWindow inherits Window {
                 dir-reportes          <=> root.dir-reportes;
                 prefijo-reporte       <=> root.prefijo-reporte;
                 monitoreo             <=> root.monitoreo;
+                version:              root.app-version;
                 guardar-general()         => { root.guardar-general(); }
                 seleccionar-dir-reportes() => { root.seleccionar-dir-reportes(); }
             }
