@@ -16,7 +16,7 @@ use std::rc::Rc;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
-use slint::{ModelRc, SharedString, VecModel, Model};
+use slint::{ModelRc, SharedString, VecModel};
 
 // Genera los tipos Rust desde los archivos .slint compilados por build.rs
 slint::include_modules!();

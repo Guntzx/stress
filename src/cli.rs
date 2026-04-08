@@ -163,9 +163,10 @@ pub fn uninstall_silent() -> Result<(), String> {
     }
 
     #[cfg(not(target_os = "windows"))]
-    fs::remove_file(&install_path).map_err(|e| e.to_string())?;
-
-    Ok(())
+    {
+        fs::remove_file(&install_path).map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 // ── stress uninstall ─────────────────────────────────────────────────────────
