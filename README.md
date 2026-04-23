@@ -44,55 +44,29 @@ curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/install.sh | bas
 
 ## Actualización
 
-### macOS / Linux
+Una vez instalado, actualiza directamente desde la terminal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/update.sh | bash
+stress update
 ```
 
-### Windows — PowerShell
-
-```powershell
-irm https://raw.githubusercontent.com/Guntzx/stress/main/update.ps1 | iex
-```
-
-### Windows — Git Bash / WSL
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/update.sh | bash
-```
-
-> El actualizador descarga los últimos cambios, recompila y reemplaza el binario instalado.
+Descarga el binario más reciente desde GitHub Releases y lo reemplaza automáticamente.
 
 ---
 
 ## Desinstalación
 
-### macOS / Linux
-
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/uninstall.sh | bash
+stress uninstall
 ```
 
-### Windows — PowerShell
-
-```powershell
-irm https://raw.githubusercontent.com/Guntzx/stress/main/uninstall.ps1 | iex
-```
-
-### Windows — Git Bash / WSL
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Guntzx/stress/main/uninstall.sh | bash
-```
-
-> El desinstalador elimina el binario y limpia la entrada del PATH.
+Elimina el binario del sistema y limpia la entrada del PATH.
 
 ---
 
 ## Compilar manualmente (desarrolladores)
 
-**Requisitos:** [Rust 1.70+](https://rustup.rs/) y Git.
+**Requisitos:** [Rust 1.88+](https://rustup.rs/) y Git.
 
 ```bash
 git clone https://github.com/Guntzx/stress.git
@@ -111,7 +85,12 @@ Ejecutables generados:
 
 ## Uso
 
-Ejecuta `stress` (o doble clic en el ejecutable) para abrir la interfaz gráfica.
+| Comando             | Descripción                              |
+|---------------------|------------------------------------------|
+| `stress`            | Abre la interfaz gráfica                 |
+| `stress update`     | Actualiza al último release              |
+| `stress uninstall`  | Desinstala stress del sistema            |
+| `stress help`       | Muestra los comandos disponibles         |
 
 ---
 
@@ -121,8 +100,8 @@ Ejecuta `stress` (o doble clic en el ejecutable) para abrir la interfaz gráfica
 |-------|----------|
 | `Permission denied` | `chmod +x stress` |
 | `stress: command not found` | Reinicia la terminal o ejecuta `source ~/.bashrc` |
-| `Library not found` (Linux) | `sudo apt-get install libssl-dev libgtk-3-dev libwebkit2gtk-4.0-dev` |
-| GUI no inicia (Linux) | `sudo apt-get install libgtk-3-dev libwebkit2gtk-4.0-dev` |
+| `Library not found` (Linux) | `sudo apt-get install libxkbcommon-dev libwayland-dev libfontconfig-dev libssl-dev` |
+| GUI no inicia (Linux) | `sudo apt-get install libxkbcommon-dev libwayland-dev libfontconfig-dev` |
 | Windows bloquea el ejecutable | Clic derecho → Propiedades → "Desbloquear" |
 
 Para más ayuda, abre un [issue en GitHub](https://github.com/Guntzx/stress/issues).

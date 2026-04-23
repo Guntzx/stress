@@ -1,0 +1,229 @@
+// individual.slint — Tab 1: Prueba Individual
+// Pantalla para configurar y ejecutar una prueba HTTP individual
+
+import {
+    Tema, AppCard, AppInput, AppButton,
+    AppCheckbox, AppBadge, AppSelect
+} from "components.slint";
+
+export component TabIndividual inherits Rectangle {
+    // ── Configuraciones guardadas ────────────────────────────────────
+    in-out property <[string]> configs-lista:        [];
+    in-out property <int>      config-idx:           -1;
+
+    // ── Parámetros generales ─────────────────────────────────────────
+    in-out property <string>   url-base:             "http://localhost:8080";
+    in-out property <string>   iteraciones:          "10";
+    in-out property <string>   peticiones-simultaneas: "1";
+    in-out property <string>   timeout-seg:          "30";
+    in-out property <string>   dir-salida:           "./results";
+    in-out property <bool>     auto-excel:           true;
+    in-out property <bool>     auto-subir:           false;
+    in-out property <string>   carpeta-remota:       "";
+
+    // ── Petición actual ──────────────────────────────────────────────
+    in-out property <int>      metodo-idx:           0;
+    in-out property <string>   endpoint:             "/";
+    in-out property <string>   descripcion:          "";
+    in-out property <string>   headers-json:         "{}";
+    in-out property <string>   body-json:            "{}";
+
+    // ── Callbacks hacia Rust ─────────────────────────────────────────
+    callback cargar-config(int);
+    callback seleccionar-dir-salida();
+    callback seleccionar-dir-remota();
+
+    // Método HTTP actual como texto (para el badge de color)
+    property <string> metodo-texto:
+        root.metodo-idx == 0 ? "GET"    :
+        root.metodo-idx == 1 ? "POST"   :
+        root.metodo-idx == 2 ? "PUT"    :
+        root.metodo-idx == 3 ? "DELETE" : "PATCH";
+
+    background: Tema.fondo-principal;
+
+    VerticalLayout {
+        padding:  14px;
+        spacing:  10px;
+
+        // ── Card ancha: Preset guardado ──────────────────────────────
+        AppCard {
+            titulo:  "CONFIG GUARDADA";
+            height:  84px;
+
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: start;
+
+                AppSelect {
+                    etiqueta:      "Cargar preset guardado";
+                    opciones:      root.configs-lista;
+                    indice-actual <=> root.config-idx;
+                    horizontal-stretch: 1;
+                    seleccionado(idx, _val) => { root.cargar-config(idx); }
+                }
+
+                // Decoración textual informativa
+                Text {
+                    text:               "// selecciona un preset para rellenar\n// todos los campos automáticamente";
+                    color:              Tema.comentario;
+                    font-family:        "Courier New";
+                    font-size:          11px;
+                    font-weight:        700;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // ── 2 columnas: General | Petición ───────────────────────────
+        HorizontalLayout {
+            spacing:         10px;
+            vertical-stretch: 1;
+
+            // ── Columna izquierda — General ──────────────────────────
+            AppCard {
+                titulo:           "GENERAL";
+                horizontal-stretch: 1;
+                vertical-stretch:  1;
+
+                VerticalLayout {
+                    spacing: 8px;
+
+                    AppInput {
+                        etiqueta: "URL BASE";
+                        valor <=> root.url-base;
+                    }
+
+                    // Fila: iteraciones / simultáneas / timeout
+                    HorizontalLayout {
+                        spacing: 6px;
+
+                        AppInput {
+                            etiqueta:           "ITERACIONES";
+                            valor <=>           root.iteraciones;
+                            horizontal-stretch: 1;
+                        }
+                        AppInput {
+                            etiqueta:           "SIMULTÁNEAS";
+                            valor <=>           root.peticiones-simultaneas;
+                            horizontal-stretch: 1;
+                        }
+                        AppInput {
+                            etiqueta:           "TIMEOUT (s)";
+                            valor <=>           root.timeout-seg;
+                            horizontal-stretch: 1;
+                        }
+                    }
+
+                    // Directorio de salida + botón browse
+                    HorizontalLayout {
+                        spacing:   6px;
+                        alignment: end;
+
+                        AppInput {
+                            etiqueta:           "DIR. SALIDA";
+                            valor <=>           root.dir-salida;
+                            horizontal-stretch: 1;
+                        }
+                        AppButton {
+                            texto:    "[…]";
+                            primario: false;
+                            width:    48px;
+                            height:   34px;
+                            pulsado() => { root.seleccionar-dir-salida(); }
+                        }
+                    }
+
+                    AppCheckbox {
+                        texto:    "Generar Excel automáticamente";
+                        marcado <=> root.auto-excel;
+                    }
+
+                    AppCheckbox {
+                        texto:    "Subir a carpeta remota";
+                        marcado <=> root.auto-subir;
+                    }
+
+                    // Carpeta remota + botón browse (deshabilitados si checkbox off)
+                    HorizontalLayout {
+                        spacing:   6px;
+                        alignment: end;
+
+                        AppInput {
+                            etiqueta:           "CARPETA REMOTA";
+                            valor <=>           root.carpeta-remota;
+                            habilitado:         root.auto-subir;
+                            horizontal-stretch: 1;
+                        }
+                        AppButton {
+                            texto:    "[…]";
+                            primario: false;
+                            habilitado: root.auto-subir;
+                            width:    48px;
+                            height:   34px;
+                            pulsado() => { root.seleccionar-dir-remota(); }
+                        }
+                    }
+
+                    // Relleno para empujar contenido hacia arriba
+                    Rectangle { vertical-stretch: 1; background: transparent; }
+                }
+            }
+
+            // ── Columna derecha — Petición ───────────────────────────
+            AppCard {
+                titulo:           "PETICIÓN";
+                horizontal-stretch: 1;
+                vertical-stretch:  1;
+
+                VerticalLayout {
+                    spacing: 8px;
+
+                    // Método HTTP + badge de color
+                    HorizontalLayout {
+                        spacing:   8px;
+                        alignment: start;
+
+                        AppSelect {
+                            etiqueta:      "MÉTODO HTTP";
+                            opciones:      ["GET", "POST", "PUT", "DELETE", "PATCH"];
+                            indice-actual <=> root.metodo-idx;
+                            width:         140px;
+                        }
+
+                        AppBadge {
+                            metodo: root.metodo-texto;
+                            y:      28px;   // alineado con la parte baja del select
+                        }
+                    }
+
+                    AppInput {
+                        etiqueta: "ENDPOINT";
+                        valor <=> root.endpoint;
+                    }
+
+                    AppInput {
+                        etiqueta: "DESCRIPCIÓN";
+                        valor <=> root.descripcion;
+                    }
+
+                    AppInput {
+                        etiqueta:   "HEADERS (JSON)";
+                        valor <=>   root.headers-json;
+                        multilinea: true;
+                    }
+
+                    AppInput {
+                        etiqueta:   "BODY (JSON)";
+                        valor <=>   root.body-json;
+                        multilinea: true;
+                        // Deshabilitado si el método es GET (índice 0)
+                        habilitado: root.metodo-idx != 0;
+                    }
+
+                    Rectangle { vertical-stretch: 1; background: transparent; }
+                }
+            }
+        }
+    }
+}
