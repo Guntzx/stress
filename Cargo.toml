@@ -40,4 +40,5 @@ sysinfo = "0.30"
 
 [build-dependencies]
 slint-build = "1.9"
+winres    = "0.1"
 

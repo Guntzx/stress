@@ -38,6 +38,9 @@ struct AppState {
 
     // Caché para detectar cuando hay nuevos resultados
     last_result_count: usize,
+
+    // Headers en modo key-value (fuente de verdad al ejecutar; la UI solo muestra)
+    header_rows: Vec<(String, String, bool)>, // (key, value, enabled)
 }
 
 impl AppState {
@@ -51,6 +54,7 @@ impl AppState {
             progress_rx:       None,
             suite_requests:    Vec::new(),
             last_result_count: 0,
+            header_rows:       vec![("".into(), "".into(), true)],
         }
     }
 }
@@ -62,6 +66,184 @@ pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Carga inicial de datos en la UI ───────────────────────────────────────
     populate_initial_data(&window);
+
+    // ── Verificación de actualizaciones en background al iniciar ─────────────
+    {
+        let window_weak = window.as_weak();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+            if let Some(latest) = rt.block_on(crate::cli::get_latest_version()) {
+                slint::invoke_from_event_loop(move || {
+                    if let Some(w) = window_weak.upgrade() {
+                        w.set_update_version(latest.into());
+                        w.set_update_disponible(true);
+                    }
+                }).ok();
+            }
+        });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CALLBACKS — Headers key-value (Tab 0)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    window.on_header_agregar({
+        let state       = state.clone();
+        let window_weak = window.as_weak();
+        move || {
+            let Some(w) = window_weak.upgrade() else { return };
+            let mut st = state.borrow_mut();
+            st.header_rows.push(("".into(), "".into(), true));
+            sync_headers_to_ui(&w, &st.header_rows);
+        }
+    });
+
+    window.on_header_eliminar({
+        let state       = state.clone();
+        let window_weak = window.as_weak();
+        move |idx| {
+            let Some(w) = window_weak.upgrade() else { return };
+            let mut st = state.borrow_mut();
+            let i = idx as usize;
+            if i < st.header_rows.len() {
+                st.header_rows.remove(i);
+                // Mantener siempre al menos una fila vacía
+                if st.header_rows.is_empty() {
+                    st.header_rows.push(("".into(), "".into(), true));
+                }
+                sync_headers_to_ui(&w, &st.header_rows);
+            }
+        }
+    });
+
+    window.on_header_toggle_enabled({
+        let state       = state.clone();
+        let window_weak = window.as_weak();
+        move |idx| {
+            let Some(w) = window_weak.upgrade() else { return };
+            let mut st = state.borrow_mut();
+            let i = idx as usize;
+            if i < st.header_rows.len() {
+                st.header_rows[i].2 = !st.header_rows[i].2;
+                sync_headers_to_ui(&w, &st.header_rows);
+            }
+        }
+    });
+
+    // Edición de key/value: solo actualiza AppState, NO el modelo Slint,
+    // para evitar que el cursor del TextInput se resetee en cada pulsación.
+    window.on_header_set_key({
+        let state = state.clone();
+        move |idx, key| {
+            let mut st = state.borrow_mut();
+            let i = idx as usize;
+            if i < st.header_rows.len() {
+                st.header_rows[i].0 = key.to_string();
+            }
+        }
+    });
+
+    window.on_header_set_value({
+        let state = state.clone();
+        move |idx, val| {
+            let mut st = state.borrow_mut();
+            let i = idx as usize;
+            if i < st.header_rows.len() {
+                st.header_rows[i].1 = val.to_string();
+            }
+        }
+    });
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CALLBACKS — Actualizaciones y sistema
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Buscar actualizaciones manualmente
+    window.on_buscar_actualizacion({
+        let window_weak = window.as_weak();
+        move || {
+            if let Some(w) = window_weak.upgrade() {
+                w.set_update_estado("Buscando...".into());
+            }
+            let window_weak = window_weak.clone();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+                let result = rt.block_on(crate::cli::get_latest_version());
+                slint::invoke_from_event_loop(move || {
+                    if let Some(w) = window_weak.upgrade() {
+                        match result {
+                            Some(latest) => {
+                                w.set_update_version(latest.into());
+                                w.set_update_disponible(true);
+                                w.set_update_estado("".into());
+                            }
+                            None => {
+                                w.set_update_estado("Al dia. Ya tienes la ultima version.".into());
+                            }
+                        }
+                    }
+                }).ok();
+            });
+        }
+    });
+
+    // Actualizar la app desde la GUI
+    window.on_actualizar_app({
+        let window_weak = window.as_weak();
+        move || {
+            let window_weak = window_weak.clone();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+                let ww = window_weak.clone();
+                let result = rt.block_on(crate::cli::download_and_replace(move |msg| {
+                    let ww2 = ww.clone();
+                    slint::invoke_from_event_loop(move || {
+                        if let Some(w) = ww2.upgrade() {
+                            w.set_update_estado(msg.into());
+                        }
+                    }).ok();
+                }));
+                slint::invoke_from_event_loop(move || {
+                    if let Some(w) = window_weak.upgrade() {
+                        match result {
+                            Ok(true) => {
+                                w.set_update_disponible(false);
+                                w.set_update_estado("Actualizado. Reinicia la app.".into());
+                            }
+                            Ok(false) => {
+                                w.set_update_disponible(false);
+                                w.set_update_estado("Actualizado. Reinicia la app.".into());
+                            }
+                            Err(e) => {
+                                w.set_update_estado(format!("Error: {}", e).into());
+                            }
+                        }
+                    }
+                }).ok();
+            });
+        }
+    });
+
+    // Desinstalar la app desde la GUI
+    window.on_desinstalar_app({
+        let window_weak = window.as_weak();
+        move || {
+            match crate::cli::uninstall_silent() {
+                Ok(_) => {
+                    if let Some(w) = window_weak.upgrade() {
+                        w.set_update_estado("Desinstalado. Puedes cerrar la app.".into());
+                        w.set_update_disponible(true); // muestra el banner con el mensaje
+                    }
+                }
+                Err(e) => {
+                    if let Some(w) = window_weak.upgrade() {
+                        w.set_update_estado(format!("Error al desinstalar: {}", e).into());
+                        w.set_update_disponible(true);
+                    }
+                }
+            }
+        }
+    });
 
     // ─────────────────────────────────────────────────────────────────────────
     // CALLBACKS — Tab 0: Prueba Individual
@@ -76,7 +258,7 @@ pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             let mut st  = state.borrow_mut();
             if st.is_running { return; }
 
-            let request  = build_request_from_ui(&w);
+            let request  = build_request_from_ui(&w, &st.header_rows);
             let base_url = w.get_url_base().to_string();
             let iters    = parse_u32(&w.get_iteraciones(), 10);
             let conc     = parse_u32(&w.get_peticiones_simultaneas(), 1);
@@ -120,17 +302,19 @@ pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Cancelar ejecución en curso
+    // Detener ejecución en curso (señaliza cancelación; el worker guarda el CSV y
+    // envía done_tx, por lo que el timer detectará la completación normalmente)
     window.on_cancelar({
         let state = state.clone();
         move || {
-            let mut st = state.borrow_mut();
+            let st = state.borrow();
             if let Some(ref flag) = st.cancel_flag {
                 if let Ok(mut f) = flag.lock() {
                     *f = true;
                 }
             }
-            st.is_running = false;
+            // No tocamos is_running: el timer sigue corriendo y procesará el done_tx
+            // que el worker envía al terminar (guardando el archivo como en ejecución normal)
         }
     });
 
@@ -149,6 +333,21 @@ pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                     }).ok();
                 }
             });
+        }
+    });
+
+    // Abrir directorio de salida en el explorador de archivos
+    window.on_abrir_dir_salida({
+        let window_weak = window.as_weak();
+        move || {
+            if let Some(w) = window_weak.upgrade() {
+                let dir = w.get_dir_salida().to_string();
+                let path = if dir.is_empty() { get_output_directory() } else { dir };
+                let _ = fs::create_dir_all(&path);
+                let abs = fs::canonicalize(&path)
+                    .unwrap_or_else(|_| PathBuf::from(&path));
+                let _ = open::that(abs);
+            }
         }
     });
 
@@ -172,13 +371,15 @@ pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
 
     // Cargar configuración guardada en la UI
     window.on_cargar_config({
+        let state       = state.clone();
         let window_weak = window.as_weak();
         move |idx| {
             let Some(w) = window_weak.upgrade() else { return };
             let configs = list_saved_configs().unwrap_or_default();
             let Some(name) = configs.get(idx as usize) else { return };
             if let Ok(cfg) = load_config(name) {
-                apply_config_to_ui(&w, &cfg);
+                let rows = apply_config_to_ui(&w, &cfg);
+                state.borrow_mut().header_rows = rows;
             }
         }
     });
@@ -194,7 +395,7 @@ pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
 
             let config = if tab == 0 {
                 // Petición individual
-                let req = build_request_from_ui(&w);
+                let req = build_request_from_ui(&w, &st.header_rows);
                 let desc = req.description.clone();
                 SavedConfig {
                     name: format!("{} - {}", desc, chrono::Local::now().format("%Y%m%d_%H%M%S")),
@@ -377,13 +578,15 @@ pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
 
     // Cargar config seleccionada en la UI (desde tab Configs)
     window.on_config_cargar({
+        let state       = state.clone();
         let window_weak = window.as_weak();
         move |idx| {
             let Some(w) = window_weak.upgrade() else { return };
             let configs = list_configs_with_info().unwrap_or_default();
             let Some(info) = configs.get(idx as usize) else { return };
             if let Ok(cfg) = load_config(&info.name) {
-                apply_config_to_ui(&w, &cfg);
+                let rows = apply_config_to_ui(&w, &cfg);
+                state.borrow_mut().header_rows = rows;
                 w.set_tab_activo(0);
             }
         }
@@ -512,14 +715,8 @@ pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     // CALLBACKS — Tab 4: Opciones Generales
     // ─────────────────────────────────────────────────────────────────────────
 
-    window.on_guardar_general({
-        let window_weak = window.as_weak();
-        move || {
-            // Persistir preferencias generales (monitoreo, etc.)
-            let Some(w) = window_weak.upgrade() else { return };
-            let _monitoreo = w.get_monitoreo();
-            // Aquí se pueden guardar preferencias en JSON de ser necesario.
-        }
+    window.on_guardar_general(|| {
+        // placeholder — nada que persistir por ahora
     });
 
     window.on_seleccionar_dir_reportes({
@@ -616,7 +813,7 @@ pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Construye un TestRequest a partir de los valores actuales de la ventana Slint.
-fn build_request_from_ui(w: &AppWindow) -> TestRequest {
+fn build_request_from_ui(w: &AppWindow, header_rows: &[(String, String, bool)]) -> TestRequest {
     let method_idx = w.get_metodo_idx();
     let method = match method_idx {
         0 => HttpMethod::GET,
@@ -631,10 +828,19 @@ fn build_request_from_ui(w: &AppWindow) -> TestRequest {
         let s = w.get_body_json().to_string();
         if s.trim().is_empty() || s == "{}" { None } else { Some(s) }
     };
+    let headers = if w.get_headers_modo() == 0 {
+        // Modo Key-Value: leer del AppState (no del modelo Slint)
+        header_rows.iter()
+            .filter(|(k, _, enabled)| *enabled && !k.is_empty())
+            .map(|(k, v, _)| HttpHeader { name: k.clone(), value: v.clone() })
+            .collect()
+    } else {
+        parse_headers_json(&w.get_headers_json())
+    };
     TestRequest {
         method,
         endpoint:     w.get_endpoint().to_string(),
-        headers:      parse_headers_json(&w.get_headers_json()),
+        headers,
         query_params: Vec::new(),
         body,
         description:  w.get_descripcion().to_string(),
@@ -642,7 +848,8 @@ fn build_request_from_ui(w: &AppWindow) -> TestRequest {
 }
 
 /// Aplica una SavedConfig a todos los campos de la ventana Slint.
-fn apply_config_to_ui(w: &AppWindow, cfg: &SavedConfig) {
+/// Retorna los header rows resultantes para que el caller actualice AppState.
+fn apply_config_to_ui(w: &AppWindow, cfg: &SavedConfig) -> Vec<(String, String, bool)> {
     w.set_url_base(cfg.base_url.clone().into());
     w.set_iteraciones(cfg.iterations.to_string().into());
     w.set_peticiones_simultaneas(cfg.concurrent_requests.to_string().into());
@@ -651,6 +858,8 @@ fn apply_config_to_ui(w: &AppWindow, cfg: &SavedConfig) {
     w.set_auto_excel(cfg.auto_generate_report);
     w.set_auto_subir(cfg.auto_upload_report);
     w.set_carpeta_remota(cfg.remote_folder_path.clone().into());
+
+    let mut result_rows = vec![("".into(), "".into(), true)];
 
     if let Some(req) = cfg.requests.first() {
         let method_idx: i32 = match req.method {
@@ -665,6 +874,14 @@ fn apply_config_to_ui(w: &AppWindow, cfg: &SavedConfig) {
         w.set_endpoint(req.endpoint.clone().into());
         w.set_descripcion(req.description.clone().into());
 
+        // Construir rows KV desde los headers guardados
+        let mut rows: Vec<(String, String, bool)> = req.headers.iter()
+            .map(|h| (h.name.clone(), h.value.clone(), true))
+            .collect();
+        rows.push(("".into(), "".into(), true)); // fila vacía al final
+        sync_headers_to_ui(w, &rows);
+
+        // JSON sincronizado para el modo JSON
         let headers_json = serde_json::to_string_pretty(
             &req.headers.iter()
                 .map(|h| serde_json::json!({h.name.clone(): h.value.clone()}))
@@ -674,7 +891,11 @@ fn apply_config_to_ui(w: &AppWindow, cfg: &SavedConfig) {
 
         let body = req.body.clone().unwrap_or_default();
         w.set_body_json(body.into());
+
+        result_rows = rows;
     }
+
+    result_rows
 }
 
 /// Recarga las listas de configuraciones guardadas en la UI.
@@ -795,6 +1016,18 @@ fn populate_initial_data(w: &AppWindow) {
     w.set_resultados(ModelRc::new(VecModel::from(vec![])));
     reset_metrics(w);
     w.set_app_version(env!("CARGO_PKG_VERSION").into());
+    // Una fila vacía inicial para el modo Key-Value de headers
+    sync_headers_to_ui(w, &[("".into(), "".into(), true)]);
+}
+
+/// Sincroniza el modelo Slint de headers KV con el Vec interno.
+fn sync_headers_to_ui(w: &AppWindow, rows: &[(String, String, bool)]) {
+    let slint_rows: Vec<HeaderRowData> = rows.iter().map(|(k, v, e)| HeaderRowData {
+        key:     k.as_str().into(),
+        value:   v.as_str().into(),
+        enabled: *e,
+    }).collect();
+    w.set_headers_filas(ModelRc::new(VecModel::from(slint_rows)));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
