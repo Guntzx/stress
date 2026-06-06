@@ -1,22 +1,14 @@
 // general.slint — Tab 5: Opciones Generales
-// Configuración de red, reportes y apariencia
+// Configuración de red, reportes y versión
 
 import {
-    Tema, AppCard, AppInput, AppButton, AppCheckbox
+    Tema, AppCard, AppInput, AppButton
 } from "components.slint";
 
 export component TabGeneral inherits Rectangle {
-    // ── Red ──────────────────────────────────────────────────────────
-    in-out property <string> proxy-url:      "";
-    in-out property <string> timeout-global: "30";
-    in-out property <string> reintentos:     "0";
-
     // ── Reportes ─────────────────────────────────────────────────────
     in-out property <string> dir-reportes:    "./reports";
     in-out property <string> prefijo-reporte: "report";
-
-    // ── Apariencia ───────────────────────────────────────────────────
-    in-out property <bool>   monitoreo:       false;
 
     // ── Información de la app ────────────────────────────────────────
     in property <string> version: "0.0.0";
@@ -39,52 +31,11 @@ export component TabGeneral inherits Rectangle {
         padding:  14px;
         spacing:  10px;
 
-        // ── Fila superior: Red | Reportes ────────────────────────────
+        // ── Fila superior: Reportes ──────────────────────────────────
         HorizontalLayout {
             spacing: 10px;
 
-            // ── Card izquierda — Configuración de Red ────────────────
-            AppCard {
-                titulo:           "RED";
-                horizontal-stretch: 1;
-                height:           190px;
-
-                VerticalLayout {
-                    spacing: 8px;
-
-                    AppInput {
-                        etiqueta: "PROXY (URL, vacío para deshabilitar)";
-                        valor <=> root.proxy-url;
-                    }
-
-                    HorizontalLayout {
-                        spacing: 6px;
-
-                        AppInput {
-                            etiqueta:           "TIMEOUT GLOBAL (s)";
-                            valor <=>           root.timeout-global;
-                            horizontal-stretch: 1;
-                        }
-                        AppInput {
-                            etiqueta:           "REINTENTOS";
-                            valor <=>           root.reintentos;
-                            horizontal-stretch: 1;
-                        }
-                    }
-
-                    Text {
-                        text:        "// el proxy y timeout global aplican a\n// todas las peticiones HTTP de la app";
-                        color:       Tema.comentario;
-                        font-family: "Courier New";
-                        font-size:   11px;
-                        wrap:        word-wrap;
-                    }
-
-                    Rectangle { vertical-stretch: 1; background: transparent; }
-                }
-            }
-
-            // ── Card derecha — Configuración de Reportes ─────────────
+            // ── Card — Configuración de Reportes ─────────────────────
             AppCard {
                 titulo:           "REPORTES";
                 horizontal-stretch: 1;
@@ -127,31 +78,6 @@ export component TabGeneral inherits Rectangle {
 
                     Rectangle { vertical-stretch: 1; background: transparent; }
                 }
-            }
-        }
-
-        // ── Card Apariencia / Monitor ────────────────────────────────
-        AppCard {
-            titulo: "APARIENCIA Y MONITOREO";
-            height: 120px;
-
-            VerticalLayout {
-                spacing: 10px;
-
-                AppCheckbox {
-                    texto:   "Habilitar monitoreo de sistema (CPU, RAM) en tiempo real";
-                    marcado <=> root.monitoreo;
-                }
-
-                Text {
-                    text:        "// el monitoreo consume recursos adicionales;\n// desactívalo si no lo necesitas";
-                    color:       Tema.comentario;
-                    font-family: "Courier New";
-                    font-size:   11px;
-                    wrap:        word-wrap;
-                }
-
-                Rectangle { vertical-stretch: 1; background: transparent; }
             }
         }
 

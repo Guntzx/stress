@@ -15,7 +15,8 @@ import { TabGeneral }     from "general.slint";
 
 // ── Ventana raíz expuesta a Rust ─────────────────────────────────────────────
 export component AppWindow inherits Window {
-    title:            "Stress — Pruebas de Carga HTTP";
+    title:            "Stress — Pruebas de Carga";
+    icon:             @image-url("../icon.ico");
     preferred-width:  1280px;
     preferred-height: 820px;
     background:       Tema.fondo-principal;
@@ -91,12 +92,8 @@ export component AppWindow inherits Window {
     // ====================================================================
     // PROPIEDADES — TAB 5: GENERAL
     // ====================================================================
-    in-out property <string> proxy-url:      "";
-    in-out property <string> timeout-global: "30";
-    in-out property <string> reintentos:     "0";
     in-out property <string> dir-reportes:   "./reports";
     in-out property <string> prefijo-reporte: "report";
-    in-out property <bool>   monitoreo:      false;
 
     // ====================================================================
     // CALLBACKS — expuestos a Rust
@@ -106,6 +103,7 @@ export component AppWindow inherits Window {
     callback ejecutar-individual();
     callback cancelar();
     callback seleccionar-dir-salida();
+    callback abrir-dir-salida();
     callback seleccionar-dir-remota();
     callback cargar-config(int);
     callback guardar-config();
@@ -170,7 +168,7 @@ export component AppWindow inherits Window {
 
                 // Título centrado
                 Text {
-                    text:                 "STRESS  —  PRUEBAS DE CARGA HTTP";
+                    text:                 "STRESS  —  PRUEBAS DE CARGA";
                     color:                #ffffff;
                     font-family:          "Courier New";
                     font-size:            14px;
@@ -302,6 +300,7 @@ export component AppWindow inherits Window {
                 headers-modo            <=> root.headers-modo;
                 cargar-config(i)              => { root.cargar-config(i); }
                 seleccionar-dir-salida()      => { root.seleccionar-dir-salida(); }
+                abrir-dir-salida()            => { root.abrir-dir-salida(); }
                 seleccionar-dir-remota()      => { root.seleccionar-dir-remota(); }
                 header-agregar()              => { root.header-agregar(); }
                 header-eliminar(i)            => { root.header-eliminar(i); }
@@ -357,12 +356,8 @@ export component AppWindow inherits Window {
 
             // Tab 4 — Opciones Generales
             if root.tab-activo == 4: TabGeneral {
-                proxy-url             <=> root.proxy-url;
-                timeout-global        <=> root.timeout-global;
-                reintentos            <=> root.reintentos;
                 dir-reportes          <=> root.dir-reportes;
                 prefijo-reporte       <=> root.prefijo-reporte;
-                monitoreo             <=> root.monitoreo;
                 version:              root.app-version;
                 update-disponible     <=> root.update-disponible;
                 update-version:       root.update-version;
@@ -405,7 +400,7 @@ export component AppWindow inherits Window {
                     pulsado() => { root.guardar-config(); }
                 }
                 if root.tab-activo == 0: AppButton {
-                    texto:     root.ejecutando ? "⏹ CANCELAR" : "▶ EJECUTAR";
+                    texto:     root.ejecutando ? "⏹ DETENER" : "▶ EJECUTAR";
                     primario:  true;
                     width:     130px;
                     pulsado() => {
@@ -422,7 +417,7 @@ export component AppWindow inherits Window {
                     pulsado() => { root.guardar-config(); }
                 }
                 if root.tab-activo == 1: AppButton {
-                    texto:     root.ejecutando ? "⏹ CANCELAR" : "▶ EJECUTAR SUITE";
+                    texto:     root.ejecutando ? "⏹ DETENER" : "▶ EJECUTAR SUITE";
                     primario:  true;
                     width:     150px;
                     pulsado() => {

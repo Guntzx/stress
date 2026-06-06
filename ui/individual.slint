@@ -33,6 +33,7 @@ export component TabIndividual inherits Rectangle {
     // ── Callbacks hacia Rust ─────────────────────────────────────────
     callback cargar-config(int);
     callback seleccionar-dir-salida();
+    callback abrir-dir-salida();
     callback seleccionar-dir-remota();
     callback header-agregar();
     callback header-eliminar(int);
@@ -56,7 +57,6 @@ export component TabIndividual inherits Rectangle {
         // ── Card ancha: Preset guardado ──────────────────────────────
         AppCard {
             titulo:  "CONFIG GUARDADA";
-            height:  84px;
 
             HorizontalLayout {
                 spacing: 10px;
@@ -139,6 +139,13 @@ export component TabIndividual inherits Rectangle {
                             height:   34px;
                             pulsado() => { root.seleccionar-dir-salida(); }
                         }
+                        AppButton {
+                            texto:    "[↗]";
+                            primario: false;
+                            width:    48px;
+                            height:   34px;
+                            pulsado() => { root.abrir-dir-salida(); }
+                        }
                     }
 
                     AppCheckbox {
@@ -186,6 +193,11 @@ export component TabIndividual inherits Rectangle {
                 VerticalLayout {
                     spacing: 8px;
 
+                    AppInput {
+                        etiqueta: "NOMBRE / DESCRIPCIÓN DE LA PRUEBA";
+                        valor <=> root.descripcion;
+                    }
+
                     // Método HTTP + badge de color
                     HorizontalLayout {
                         spacing:   8px;
@@ -207,11 +219,6 @@ export component TabIndividual inherits Rectangle {
                     AppInput {
                         etiqueta: "ENDPOINT";
                         valor <=> root.endpoint;
-                    }
-
-                    AppInput {
-                        etiqueta: "DESCRIPCIÓN";
-                        valor <=> root.descripcion;
                     }
 
                     // ── Selector de modo de headers ──────────────

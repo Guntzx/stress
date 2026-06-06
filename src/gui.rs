@@ -302,17 +302,19 @@ pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Cancelar ejecución en curso
+    // Detener ejecución en curso (señaliza cancelación; el worker guarda el CSV y
+    // envía done_tx, por lo que el timer detectará la completación normalmente)
     window.on_cancelar({
         let state = state.clone();
         move || {
-            let mut st = state.borrow_mut();
+            let st = state.borrow();
             if let Some(ref flag) = st.cancel_flag {
                 if let Ok(mut f) = flag.lock() {
                     *f = true;
                 }
             }
-            st.is_running = false;
+            // No tocamos is_running: el timer sigue corriendo y procesará el done_tx
+            // que el worker envía al terminar (guardando el archivo como en ejecución normal)
         }
     });
 
@@ -331,6 +333,21 @@ pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                     }).ok();
                 }
             });
+        }
+    });
+
+    // Abrir directorio de salida en el explorador de archivos
+    window.on_abrir_dir_salida({
+        let window_weak = window.as_weak();
+        move || {
+            if let Some(w) = window_weak.upgrade() {
+                let dir = w.get_dir_salida().to_string();
+                let path = if dir.is_empty() { get_output_directory() } else { dir };
+                let _ = fs::create_dir_all(&path);
+                let abs = fs::canonicalize(&path)
+                    .unwrap_or_else(|_| PathBuf::from(&path));
+                let _ = open::that(abs);
+            }
         }
     });
 
@@ -698,14 +715,8 @@ pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     // CALLBACKS — Tab 4: Opciones Generales
     // ─────────────────────────────────────────────────────────────────────────
 
-    window.on_guardar_general({
-        let window_weak = window.as_weak();
-        move || {
-            // Persistir preferencias generales (monitoreo, etc.)
-            let Some(w) = window_weak.upgrade() else { return };
-            let _monitoreo = w.get_monitoreo();
-            // Aquí se pueden guardar preferencias en JSON de ser necesario.
-        }
+    window.on_guardar_general(|| {
+        // placeholder — nada que persistir por ahora
     });
 
     window.on_seleccionar_dir_reportes({
