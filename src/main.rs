@@ -2,9 +2,11 @@
 
 mod cli;
 mod config;
+mod curl_parser;
 mod gui;
 mod load_test;
 mod models;
+mod postman;
 mod report_generator;
 
 /// En Windows, los binarios marcados como `windows_subsystem = "windows"` no tienen
