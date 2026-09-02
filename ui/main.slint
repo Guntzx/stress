@@ -4,7 +4,7 @@
 
 import {
     Tema, AppTabs, AppButton, StatusBar,
-    ConfigItemData, ResultItemData, SuiteRequestData
+    ConfigItemData, ResultItemData, SuiteRequestData, HeaderRowData
 } from "components.slint";
 
 import { TabIndividual }  from "individual.slint";
@@ -15,7 +15,8 @@ import { TabGeneral }     from "general.slint";
 
 // ── Ventana raíz expuesta a Rust ─────────────────────────────────────────────
 export component AppWindow inherits Window {
-    title:            "Stress — Pruebas de Carga HTTP";
+    title:            "Stress — Pruebas de Carga";
+    icon:             @image-url("../icon.ico");
     preferred-width:  1280px;
     preferred-height: 820px;
     background:       Tema.fondo-principal;
@@ -31,6 +32,11 @@ export component AppWindow inherits Window {
     in-out property <string> barra-progreso:  "░░░░░░░░░░ 0%";
     in-out property <string> mensaje-estado:  "";
     in property <string>     app-version:     "0.0.0";
+
+    // ── Actualización ─────────────────────────────────────────────────
+    in-out property <bool>   update-disponible: false;
+    in property    <string>  update-version:    "";
+    in-out property <string> update-estado:     "";
 
     // ====================================================================
     // PROPIEDADES — TAB 1: INDIVIDUAL
@@ -49,11 +55,13 @@ export component AppWindow inherits Window {
     in-out property <int>      metodo-idx:              0;
     in-out property <string>   endpoint:                "/";
     in-out property <string>   descripcion:             "";
-    in-out property <string>   headers-json:            "{}";
-    in-out property <string>   body-json:               "{}";
-    in-out property <string>   curl-input:              "";
-    in-out property <string>   import-estado:             "";
-    in-out property <bool>     import-ok:                 false;
+    in-out property <string>           headers-json:   "{}";
+    in-out property <string>           body-json:      "{}";
+    in-out property <[HeaderRowData]>  headers-filas:  [];
+    in-out property <int>              headers-modo:   0;
+    in-out property <string>           curl-input:     "";
+    in-out property <string>           import-estado:  "";
+    in-out property <bool>             import-ok:      false;
 
     // ====================================================================
     // PROPIEDADES — TAB 2: SUITE
@@ -89,12 +97,8 @@ export component AppWindow inherits Window {
     // ====================================================================
     // PROPIEDADES — TAB 5: GENERAL
     // ====================================================================
-    in-out property <string> proxy-url:      "";
-    in-out property <string> timeout-global: "30";
-    in-out property <string> reintentos:     "0";
     in-out property <string> dir-reportes:   "./reports";
     in-out property <string> prefijo-reporte: "report";
-    in-out property <bool>   monitoreo:      false;
 
     // ====================================================================
     // CALLBACKS — expuestos a Rust
@@ -104,11 +108,17 @@ export component AppWindow inherits Window {
     callback ejecutar-individual();
     callback cancelar();
     callback seleccionar-dir-salida();
+    callback abrir-dir-salida();
     callback seleccionar-dir-remota();
     callback cargar-config(int);
     callback importar-curl();
     callback importar-postman();
     callback guardar-config();
+    callback header-agregar();
+    callback header-eliminar(int);
+    callback header-toggle-enabled(int);
+    callback header-set-key(int, string);
+    callback header-set-value(int, string);
 
     // Tab 2 — Suite
     callback suite-agregar();
@@ -131,6 +141,9 @@ export component AppWindow inherits Window {
     // Tab 5 — General
     callback guardar-general();
     callback seleccionar-dir-reportes();
+    callback buscar-actualizacion();
+    callback actualizar-app();
+    callback desinstalar-app();
 
     // ====================================================================
     // LAYOUT PRINCIPAL
@@ -162,7 +175,7 @@ export component AppWindow inherits Window {
 
                 // Título centrado
                 Text {
-                    text:                 "STRESS  —  PRUEBAS DE CARGA HTTP";
+                    text:                 "STRESS  —  PRUEBAS DE CARGA";
                     color:                #ffffff;
                     font-family:          "Courier New";
                     font-size:            14px;
@@ -203,6 +216,70 @@ export component AppWindow inherits Window {
             tab-activo <=> root.tab-activo;
         }
 
+        // ── Banner de actualización disponible ──────────────────────
+        if root.update-disponible || root.update-estado != "": Rectangle {
+            height:       36px;
+            background:   #080500;
+            border-color: #ef9f27;
+            border-width: 1px;
+
+            HorizontalLayout {
+                padding-left:  16px;
+                padding-right: 16px;
+                spacing:       12px;
+
+                Text {
+                    text: root.update-estado != ""
+                        ? root.update-estado
+                        : "▲  nueva version disponible: v" + root.update-version;
+                    color:              #ef9f27;
+                    font-family:        "Courier New";
+                    font-size:          12px;
+                    font-weight:        700;
+                    letter-spacing:     0.5px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+
+                // Botón ACTUALIZAR — solo cuando hay versión disponible y no está ocupado
+                if root.update-disponible && root.update-estado == "": AppButton {
+                    texto:    "ACTUALIZAR";
+                    primario: true;
+                    width:    110px;
+                    height:   26px;
+                    pulsado() => { root.actualizar-app(); }
+                }
+
+                // Botón cerrar [×]
+                if root.update-estado == "" || root.update-estado == "Actualizado. Reinicia la app.": Rectangle {
+                    width:         26px;
+                    height:        26px;
+                    background:    transparent;
+                    border-color:  ta-cerrar.has-hover ? Tema.primario : Tema.borde;
+                    border-width:  1px;
+                    border-radius: 2px;
+                    y:             (parent.height - self.height) / 2;
+
+                    Text {
+                        text:                 "×";
+                        color:                #aaaaaa;
+                        font-family:          "Courier New";
+                        font-size:            14px;
+                        horizontal-alignment: center;
+                        vertical-alignment:   center;
+                    }
+
+                    ta-cerrar := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.update-disponible = false;
+                            root.update-estado = "";
+                        }
+                    }
+                }
+            }
+        }
+
         // ── Área de contenido (cambia por tab) ───────────────────────
         Rectangle {
             background:       Tema.fondo-principal;
@@ -227,14 +304,22 @@ export component AppWindow inherits Window {
                 descripcion             <=> root.descripcion;
                 headers-json            <=> root.headers-json;
                 body-json               <=> root.body-json;
+                headers-filas           <=> root.headers-filas;
+                headers-modo            <=> root.headers-modo;
                 curl-input              <=> root.curl-input;
-                import-estado             <=> root.import-estado;
-                import-ok                 <=> root.import-ok;
-                cargar-config(i)        => { root.cargar-config(i); }
-                importar-curl()         => { root.importar-curl(); }
-                importar-postman()      => { root.importar-postman(); }
-                seleccionar-dir-salida()  => { root.seleccionar-dir-salida(); }
-                seleccionar-dir-remota()  => { root.seleccionar-dir-remota(); }
+                import-estado           <=> root.import-estado;
+                import-ok               <=> root.import-ok;
+                cargar-config(i)              => { root.cargar-config(i); }
+                importar-curl()               => { root.importar-curl(); }
+                importar-postman()            => { root.importar-postman(); }
+                seleccionar-dir-salida()      => { root.seleccionar-dir-salida(); }
+                abrir-dir-salida()            => { root.abrir-dir-salida(); }
+                seleccionar-dir-remota()      => { root.seleccionar-dir-remota(); }
+                header-agregar()              => { root.header-agregar(); }
+                header-eliminar(i)            => { root.header-eliminar(i); }
+                header-toggle-enabled(i)      => { root.header-toggle-enabled(i); }
+                header-set-key(i, k)          => { root.header-set-key(i, k); }
+                header-set-value(i, v)        => { root.header-set-value(i, v); }
             }
 
             // Tab 1 — Suite de Pruebas
@@ -287,15 +372,17 @@ export component AppWindow inherits Window {
 
             // Tab 4 — Opciones Generales
             if root.tab-activo == 4: TabGeneral {
-                proxy-url             <=> root.proxy-url;
-                timeout-global        <=> root.timeout-global;
-                reintentos            <=> root.reintentos;
                 dir-reportes          <=> root.dir-reportes;
                 prefijo-reporte       <=> root.prefijo-reporte;
-                monitoreo             <=> root.monitoreo;
                 version:              root.app-version;
-                guardar-general()         => { root.guardar-general(); }
+                update-disponible     <=> root.update-disponible;
+                update-version:       root.update-version;
+                update-estado         <=> root.update-estado;
+                guardar-general()          => { root.guardar-general(); }
                 seleccionar-dir-reportes() => { root.seleccionar-dir-reportes(); }
+                buscar-actualizacion()     => { root.buscar-actualizacion(); }
+                actualizar-app()           => { root.actualizar-app(); }
+                desinstalar-app()          => { root.desinstalar-app(); }
             }
         }
 
@@ -329,8 +416,8 @@ export component AppWindow inherits Window {
                     pulsado() => { root.guardar-config(); }
                 }
                 if root.tab-activo == 0: AppButton {
-                    texto:      root.cancelando ? "⏹ CANCELANDO…"
-                                : (root.ejecutando ? "⏹ CANCELAR" : "▶ EJECUTAR");
+                    texto:      root.cancelando ? "⏹ DETENIENDO…"
+                                : (root.ejecutando ? "⏹ DETENER" : "▶ EJECUTAR");
                     primario:   true;
                     habilitado: !root.cancelando;
                     width:      130px;
@@ -348,8 +435,8 @@ export component AppWindow inherits Window {
                     pulsado() => { root.guardar-config(); }
                 }
                 if root.tab-activo == 1: AppButton {
-                    texto:      root.cancelando ? "⏹ CANCELANDO…"
-                                : (root.ejecutando ? "⏹ CANCELAR" : "▶ EJECUTAR SUITE");
+                    texto:      root.cancelando ? "⏹ DETENIENDO…"
+                                : (root.ejecutando ? "⏹ DETENER" : "▶ EJECUTAR SUITE");
                     primario:   true;
                     habilitado: !root.cancelando;
                     width:      150px;

@@ -32,6 +32,13 @@ export struct SuiteRequestData {
     description: string,
 }
 
+// Fila de header key-value (modo Postman)
+export struct HeaderRowData {
+    key:     string,
+    value:   string,
+    enabled: bool,
+}
+
 // --- Paleta global de colores del tema ---
 export global Tema {
     // Fondos
@@ -395,7 +402,7 @@ export component AppSelect inherits Rectangle {
         x:            0;
         y:            root.height;
         // Más ancho que la caja: los nombres guardados llevan fecha y no entran.
-        width:        max(root.width, root.detalles.length > 0 ? 640px : root.width);
+        width:        max(root.width, root.detalles.length > 0 ? 640px : 220px);
         // Alto explícito: sin esto el contenido queda sin fondo y se transparenta.
         // Tope de 12 filas visibles; con más opciones se hace scroll adentro.
         height:       root.opciones.length == 0
