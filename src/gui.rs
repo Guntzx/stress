@@ -30,11 +30,15 @@ struct AppState {
     // Control de ejecución en curso
     is_running:       bool,
     cancel_flag:      Option<Arc<Mutex<bool>>>,
+    cancelado:        bool,
     completion_rx:    Option<mpsc::Receiver<()>>,
     progress_rx:      Option<mpsc::Receiver<f32>>,
 
     // Lista local de peticiones de la suite (sólo hilo UI)
     suite_requests:   Vec<TestRequest>,
+
+    // Import de Postman resuelto en un hilo aparte; lo aplica el timer de UI
+    import_pendiente: Arc<Mutex<Option<Result<crate::postman::ImportedCollection, String>>>>,
 
     // Caché para detectar cuando hay nuevos resultados
     last_result_count: usize,
@@ -47,9 +51,11 @@ impl AppState {
             logs:              Arc::new(Mutex::new(Vec::new())),
             is_running:        false,
             cancel_flag:       None,
+            cancelado:         false,
             completion_rx:     None,
             progress_rx:       None,
             suite_requests:    Vec::new(),
+            import_pendiente:  Arc::new(Mutex::new(None)),
             last_result_count: 0,
         }
     }
@@ -96,11 +102,13 @@ pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
 
             st.is_running     = true;
             st.cancel_flag    = Some(cancel);
+            st.cancelado      = false;
             st.completion_rx  = Some(done_rx);
             st.progress_rx    = Some(prog_rx);
             drop(st);
 
             w.set_ejecutando(true);
+            w.set_cancelando(false);
             w.set_estado("RUNNING".into());
             w.set_barra_progreso("░░░░░░░░░░ 0%".into());
 
@@ -122,15 +130,24 @@ pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
 
     // Cancelar ejecución en curso
     window.on_cancelar({
-        let state = state.clone();
+        let state       = state.clone();
+        let window_weak = window.as_weak();
         move || {
+            let Some(w) = window_weak.upgrade() else { return };
             let mut st = state.borrow_mut();
+            if !st.is_running || st.cancelado { return; }
+
             if let Some(ref flag) = st.cancel_flag {
                 if let Ok(mut f) = flag.lock() {
                     *f = true;
                 }
             }
-            st.is_running = false;
+            // `is_running` queda en true a propósito: el timer tiene que seguir
+            // vivo para procesar el fin del hilo y devolver la UI a IDLE. Al
+            // apagarlo acá el botón se clavaba en "CANCELAR" y ya no hacía nada.
+            st.cancelado = true;
+            w.set_cancelando(true);
+            w.set_estado("CANCELANDO".into());
         }
     });
 
@@ -180,6 +197,60 @@ pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             if let Ok(cfg) = load_config(name) {
                 apply_config_to_ui(&w, &cfg);
             }
+        }
+    });
+
+    // Importar comando curl y rellenar la petición individual
+    window.on_importar_curl({
+        let window_weak = window.as_weak();
+        move || {
+            let Some(w) = window_weak.upgrade() else { return };
+            let raw = w.get_curl_input().to_string();
+            if raw.trim().is_empty() {
+                w.set_import_ok(false);
+                w.set_import_estado("// pega un curl primero".into());
+                return;
+            }
+            match crate::curl_parser::parse_curl(&raw) {
+                Ok(parsed) => {
+                    let req = &parsed.request;
+                    let mut msg = format!(
+                        "// ok — {}\n// {} header(s){}",
+                        req.method,
+                        req.headers.len(),
+                        if req.body.is_some() { "\n// con body" } else { "" },
+                    );
+                    // La lista de métodos de la UI sólo tiene GET/POST/PUT/DELETE/PATCH.
+                    if matches!(req.method, HttpMethod::HEAD | HttpMethod::OPTIONS) {
+                        msg.push_str(&format!("\n// {} no está\n// en la lista: va GET", req.method));
+                    }
+                    w.set_url_base(parsed.base_url.clone().into());
+                    apply_request_to_ui(&w, req);
+                    w.set_curl_input("".into());
+                    w.set_import_ok(true);
+                    w.set_import_estado(msg.into());
+                }
+                Err(e) => {
+                    w.set_import_ok(false);
+                    w.set_import_estado(format!("// error: {e}").into());
+                }
+            }
+        }
+    });
+
+    // Importar colección Postman (+ entornos): se pueden elegir varios archivos
+    window.on_importar_postman({
+        let state = state.clone();
+        move || {
+            let pendiente = state.borrow().import_pendiente.clone();
+            std::thread::spawn(move || {
+                let Some(paths) = rfd::FileDialog::new()
+                    .add_filter("JSON de Postman", &["json"])
+                    .set_title("Colección Postman (podés sumar el entorno con ⌘/Ctrl)")
+                    .pick_files()
+                else { return };
+                *pendiente.lock().unwrap() = Some(crate::postman::import_files(&paths));
+            });
         }
     });
 
@@ -348,11 +419,13 @@ pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
 
             st.is_running    = true;
             st.cancel_flag   = Some(cancel);
+            st.cancelado     = false;
             st.completion_rx = Some(done_rx);
             st.progress_rx   = Some(prog_rx);
             drop(st);
 
             w.set_ejecutando(true);
+            w.set_cancelando(false);
             w.set_estado("RUNNING".into());
             w.set_barra_progreso("░░░░░░░░░░ 0%".into());
 
@@ -560,6 +633,12 @@ pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 let Some(w) = window_weak.upgrade() else { return };
                 let mut st = state.borrow_mut();
 
+                // Import de Postman terminado en el hilo del diálogo
+                let import = st.import_pendiente.lock().unwrap().take();
+                if let Some(resultado) = import {
+                    aplicar_import_postman(&w, &mut st, resultado);
+                }
+
                 if !st.is_running { return; }
 
                 // Actualizar barra de progreso
@@ -589,14 +668,20 @@ pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
 
                 if completed {
                     st.is_running    = false;
+                    let cancelado    = std::mem::take(&mut st.cancelado);
                     st.completion_rx = None;
                     st.progress_rx   = None;
                     let results_arc  = st.results.clone();
                     drop(st);
 
                     w.set_ejecutando(false);
-                    w.set_estado("DONE".into());
-                    w.set_barra_progreso("██████████ 100%".into());
+                    w.set_cancelando(false);
+                    if cancelado {
+                        w.set_estado("CANCELADO".into());
+                    } else {
+                        w.set_estado("DONE".into());
+                        w.set_barra_progreso("██████████ 100%".into());
+                    }
 
                     // Actualizar tabla y métricas en la UI
                     refresh_results_in_ui(&w, &results_arc);
@@ -653,28 +738,82 @@ fn apply_config_to_ui(w: &AppWindow, cfg: &SavedConfig) {
     w.set_carpeta_remota(cfg.remote_folder_path.clone().into());
 
     if let Some(req) = cfg.requests.first() {
-        let method_idx: i32 = match req.method {
-            HttpMethod::GET     => 0,
-            HttpMethod::POST    => 1,
-            HttpMethod::PUT     => 2,
-            HttpMethod::DELETE  => 3,
-            HttpMethod::PATCH   => 4,
-            _                   => 0,
-        };
-        w.set_metodo_idx(method_idx);
-        w.set_endpoint(req.endpoint.clone().into());
-        w.set_descripcion(req.description.clone().into());
-
-        let headers_json = serde_json::to_string_pretty(
-            &req.headers.iter()
-                .map(|h| serde_json::json!({h.name.clone(): h.value.clone()}))
-                .collect::<Vec<_>>()
-        ).unwrap_or_else(|_| "{}".to_string());
-        w.set_headers_json(headers_json.into());
-
-        let body = req.body.clone().unwrap_or_default();
-        w.set_body_json(body.into());
+        apply_request_to_ui(w, req);
     }
+}
+
+/// Rellena los campos de la petición individual desde un TestRequest.
+fn apply_request_to_ui(w: &AppWindow, req: &TestRequest) {
+    let method_idx: i32 = match req.method {
+        HttpMethod::GET     => 0,
+        HttpMethod::POST    => 1,
+        HttpMethod::PUT     => 2,
+        HttpMethod::DELETE  => 3,
+        HttpMethod::PATCH   => 4,
+        _                   => 0,
+    };
+    w.set_metodo_idx(method_idx);
+    w.set_endpoint(req.endpoint.clone().into());
+    w.set_descripcion(req.description.clone().into());
+
+    // Headers como objeto JSON { "name": "value" } — formato que espera parse_headers_json
+    let mut map = serde_json::Map::new();
+    for h in &req.headers {
+        map.insert(h.name.clone(), serde_json::Value::String(h.value.clone()));
+    }
+    let headers_json = serde_json::to_string_pretty(&serde_json::Value::Object(map))
+        .unwrap_or_else(|_| "{}".to_string());
+    w.set_headers_json(headers_json.into());
+
+    let body = req.body.clone().unwrap_or_default();
+    w.set_body_json(body.into());
+}
+
+/// Vuelca una colección Postman importada en la suite (o en la petición
+/// individual si trae una sola) y deja el resumen a la vista.
+fn aplicar_import_postman(
+    w: &AppWindow,
+    st: &mut AppState,
+    resultado: Result<crate::postman::ImportedCollection, String>,
+) {
+    let col = match resultado {
+        Ok(c) => c,
+        Err(e) => {
+            w.set_import_ok(false);
+            w.set_import_estado(format!("// error: {e}").into());
+            return;
+        }
+    };
+
+    let mut msg = format!("// ok — {} petición(es)\n// {} variables", col.requests.len(), col.vars_usadas);
+    if !col.sin_valor.is_empty() {
+        let faltan: Vec<&str> = col.sin_valor.iter().take(3).map(|s| s.as_str()).collect();
+        let resto = col.sin_valor.len().saturating_sub(faltan.len());
+        msg.push_str(&format!("\n// sin valor: {}{}",
+            faltan.join(", "),
+            if resto > 0 { format!(" +{resto}") } else { String::new() }));
+    }
+    if !col.avisos.is_empty() {
+        msg.push_str(&format!("\n// {} sin traducir", col.avisos.len()));
+        for a in &col.avisos { eprintln!("[postman] {a}"); }
+    }
+
+    w.set_url_base(col.base_url.clone().into());
+
+    // Una sola petición no justifica armar una suite.
+    if col.requests.len() == 1 {
+        apply_request_to_ui(w, &col.requests[0]);
+        w.set_tab_activo(0);
+    } else {
+        st.suite_requests = col.requests;
+        w.set_suite_nombre(col.name.clone().into());
+        w.set_suite_seleccionado(0);
+        sync_suite_to_ui(w, &st.suite_requests);
+        w.set_tab_activo(1);
+    }
+
+    w.set_import_ok(true);
+    w.set_import_estado(msg.into());
 }
 
 /// Recarga las listas de configuraciones guardadas en la UI.
@@ -682,6 +821,23 @@ fn refresh_configs_in_ui(w: &AppWindow) {
     let names = list_saved_configs().unwrap_or_default();
     let slint_names: Vec<SharedString> = names.iter().map(|s| s.as_str().into()).collect();
     w.set_configs_lista(ModelRc::new(VecModel::from(slint_names)));
+
+    // Segunda columna del desplegable: por el nombre solo no se distingue qué pide
+    // cada preset. Mismo orden que `names`, que es el que indexa cargar_config.
+    let detalles: Vec<SharedString> = names
+        .iter()
+        .map(|n| match load_config(n) {
+            Ok(cfg) => match cfg.requests.first() {
+                Some(r) if cfg.requests.len() > 1 =>
+                    format!("{} {}  +{}", r.method, r.endpoint, cfg.requests.len() - 1),
+                Some(r) => format!("{} {}", r.method, r.endpoint),
+                None => "sin peticiones".to_string(),
+            },
+            Err(_) => String::new(),
+        })
+        .map(|d| d.into())
+        .collect();
+    w.set_configs_detalles(ModelRc::new(VecModel::from(detalles)));
 
     let infos = list_configs_with_info().unwrap_or_default();
     let slint_infos: Vec<ConfigItemData> = infos.iter().map(|ci| ConfigItemData {
@@ -829,7 +985,7 @@ fn find_csv_files_in_dir(dir_path: &str) -> Vec<PathBuf> {
 /// Busca un archivo CSV específico por nombre de prueba.
 fn find_csv_file_in_directory(dir_path: &str, test_name: &str) -> Option<PathBuf> {
     let Ok(entries) = fs::read_dir(dir_path) else { return None };
-    let safe_name = test_name.replace(' ', "_");
+    let safe_name = crate::load_test::sanitize_name(test_name);
     for entry in entries.filter_map(|e| e.ok()) {
         let path = entry.path();
         if path.is_file() && path.extension().map_or(false, |ext| ext == "csv") {

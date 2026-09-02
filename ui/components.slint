@@ -112,6 +112,7 @@ export component AppInput inherits Rectangle {
     in-out property <string> valor:  "";
     in property <bool>  habilitado:  true;
     in property <bool>  multilinea:  false;
+    in property <string> placeholder: "";
 
     background:    Tema.fondo-principal;
     border-color:  ti.has-focus ? Tema.borde-focus : Tema.borde;
@@ -132,17 +133,43 @@ export component AppInput inherits Rectangle {
             font-weight: 700;
         }
 
-        ti := TextInput {
-            text <=> root.valor;
-            color:              root.habilitado ? Tema.primario : Tema.comentario;
-            selection-background-color: #3a2500;
-            selection-foreground-color: #ffffff;
-            font-family:        "Courier New";
-            font-size:          13px;
-            enabled:            root.habilitado;
-            wrap:               root.multilinea ? word-wrap : no-wrap;
-            single-line:        !root.multilinea;
-            vertical-alignment: center;
+        // Contenedor del input con placeholder superpuesto
+        Rectangle {
+            vertical-stretch: 1;
+            // Un curl pegado de varias líneas se desbordaba fuera del recuadro
+            clip: true;
+
+            ti := TextInput {
+                width:              parent.width;
+                height:             parent.height;
+                text <=>            root.valor;
+                color:              root.habilitado ? Tema.primario : Tema.comentario;
+                // En macOS Slint pinta el cursor con selection-background-color, no con
+                // color (i-slint-core items/text.rs). Con el marrón de antes quedaba
+                // invisible sobre el fondo: va ámbar para verlo.
+                text-cursor-width:  2px;
+                selection-background-color: Tema.borde-focus;
+                selection-foreground-color: Tema.fondo-principal;
+                font-family:        "Courier New";
+                font-size:          13px;
+                enabled:            root.habilitado;
+                wrap:               root.multilinea ? word-wrap : no-wrap;
+                single-line:        !root.multilinea;
+                vertical-alignment: root.multilinea ? top : center;
+            }
+
+            // Texto de ejemplo: sólo con el campo vacío y sin foco — si no, tapa el cursor
+            if root.valor == "" && root.placeholder != "" && !ti.has-focus: Text {
+                text:               root.placeholder;
+                color:              Tema.comentario;
+                font-family:        "Courier New";
+                font-size:          13px;
+                wrap:               root.multilinea ? word-wrap : no-wrap;
+                overflow:           root.multilinea ? clip : elide;
+                width:              parent.width;
+                height:             parent.height;
+                vertical-alignment: root.multilinea ? top : center;
+            }
         }
     }
 }
@@ -294,6 +321,8 @@ export component AppBadge inherits Rectangle {
 // ============================================================
 export component AppSelect inherits Rectangle {
     in property <[string]>  opciones:      [];
+    // Texto secundario opcional, uno por opción (método + endpoint, "3 req", …)
+    in property <[string]>  detalles:      [];
     in-out property <int>   indice-actual: 0;
     in property <bool>      habilitado:    true;
     in property <string>    etiqueta:      "";
@@ -301,6 +330,10 @@ export component AppSelect inherits Rectangle {
     out property <string> valor-actual:
         (opciones.length > 0 && indice-actual >= 0 && indice-actual < opciones.length)
         ? opciones[indice-actual] : "";
+
+    out property <string> detalle-actual:
+        (indice-actual >= 0 && indice-actual < detalles.length)
+        ? detalles[indice-actual] : "";
 
     callback seleccionado(int, string);
 
@@ -334,6 +367,14 @@ export component AppSelect inherits Rectangle {
                 overflow:           elide;
             }
             Text {
+                text:               root.detalle-actual;
+                color:              Tema.comentario;
+                font-family:        "Courier New";
+                font-size:          11px;
+                vertical-alignment: center;
+                overflow:           elide;
+            }
+            Text {
                 text:               " ▼ ";
                 color:              Tema.etiqueta;
                 font-family:        "Courier New";
@@ -351,37 +392,92 @@ export component AppSelect inherits Rectangle {
 
     // Popup flotante con las opciones
     popup := PopupWindow {
-        x:              0;
-        y:              root.height;
-        width:          root.width;
-        close-policy: no-auto-close;
+        x:            0;
+        y:            root.height;
+        // Más ancho que la caja: los nombres guardados llevan fecha y no entran.
+        width:        max(root.width, root.detalles.length > 0 ? 640px : root.width);
+        // Alto explícito: sin esto el contenido queda sin fondo y se transparenta.
+        // Tope de 12 filas visibles; con más opciones se hace scroll adentro.
+        height:       root.opciones.length == 0
+                      ? 32px
+                      : min(root.opciones.length * 28px, 336px) + 2px;
+        // Cierra al hacer clic afuera o con Esc; antes no había forma de cerrarlo.
+        close-policy: close-on-click-outside;
 
         Rectangle {
-            background:   #080500;
-            border-color: #3a2500;
-            border-width: 1px;
+            width:             parent.width;
+            height:            parent.height;
+            background:        #080500;
+            border-color:      Tema.borde-focus;
+            border-width:      1px;
+            border-radius:     2px;
+            drop-shadow-blur:  14px;
+            drop-shadow-color: #000000;
+            clip:              true;
 
-            VerticalLayout {
-                for item[idx] in root.opciones: Rectangle {
-                    height: 28px;
+            if root.opciones.length == 0: Text {
+                text:               "// no hay nada guardado todavía";
+                color:              Tema.comentario;
+                font-family:        "Courier New";
+                font-size:          11px;
+                font-weight:        700;
+                x:                  8px;
+                width:              parent.width - 16px;
+                height:             parent.height;
+                vertical-alignment: center;
+            }
 
-                    item-ta := TouchArea {
-                        clicked => {
-                            root.indice-actual = idx;
-                            root.seleccionado(idx, item);
-                            popup.close();
+            Flickable {
+                x:               1px;
+                y:               1px;
+                width:           parent.width - 2px;
+                height:          parent.height - 2px;
+                viewport-width:  self.width;
+                viewport-height: root.opciones.length * 28px;
+
+                VerticalLayout {
+                    for item[idx] in root.opciones: Rectangle {
+                        height: 28px;
+
+                        item-ta := TouchArea {
+                            clicked => {
+                                root.indice-actual = idx;
+                                root.seleccionado(idx, item);
+                                popup.close();
+                            }
                         }
-                    }
 
-                    background: item-ta.has-hover ? #1a0f00 : #080500;
+                        // La fila activa se marca en ámbar
+                        background: item-ta.has-hover ? #1a0f00
+                                    : (idx == root.indice-actual ? #120a00 : #080500);
 
-                    Text {
-                        text:        item;
-                        color:       #ffffff;
-                        font-family: "Courier New";
-                        font-size:   13px;
-                        x:           8px;
-                        vertical-alignment: center;
+                        HorizontalLayout {
+                            padding-left:  8px;
+                            padding-right: 8px;
+                            spacing:       12px;
+
+                            Text {
+                                text:               item;
+                                color:              idx == root.indice-actual ? Tema.borde-focus : #ffffff;
+                                font-family:        "Courier New";
+                                font-size:          13px;
+                                horizontal-stretch: 1;
+                                overflow:           elide;
+                                vertical-alignment: center;
+                            }
+
+                            if idx < root.detalles.length: Text {
+                                text:                 root.detalles[idx];
+                                color:                Tema.comentario;
+                                font-family:          "Courier New";
+                                font-size:            11px;
+                                font-weight:          700;
+                                width:                250px;
+                                overflow:             elide;
+                                horizontal-alignment: right;
+                                vertical-alignment:   center;
+                            }
+                        }
                     }
                 }
             }

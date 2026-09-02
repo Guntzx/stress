@@ -25,6 +25,7 @@ export component AppWindow inherits Window {
     // ====================================================================
     in-out property <int>    tab-activo:      0;
     in-out property <bool>   ejecutando:      false;
+    in-out property <bool>   cancelando:      false;
     in-out property <float>  progreso:        0.0;
     in-out property <string> estado:          "IDLE";
     in-out property <string> barra-progreso:  "░░░░░░░░░░ 0%";
@@ -34,6 +35,7 @@ export component AppWindow inherits Window {
     // ====================================================================
     // PROPIEDADES — TAB 1: INDIVIDUAL
     // ====================================================================
+    in-out property <[string]> configs-detalles:      [];
     in-out property <[string]> configs-lista:           [];
     in-out property <int>      config-idx:              -1;
     in-out property <string>   url-base:                "http://localhost:8080";
@@ -49,6 +51,9 @@ export component AppWindow inherits Window {
     in-out property <string>   descripcion:             "";
     in-out property <string>   headers-json:            "{}";
     in-out property <string>   body-json:               "{}";
+    in-out property <string>   curl-input:              "";
+    in-out property <string>   import-estado:             "";
+    in-out property <bool>     import-ok:                 false;
 
     // ====================================================================
     // PROPIEDADES — TAB 2: SUITE
@@ -101,6 +106,8 @@ export component AppWindow inherits Window {
     callback seleccionar-dir-salida();
     callback seleccionar-dir-remota();
     callback cargar-config(int);
+    callback importar-curl();
+    callback importar-postman();
     callback guardar-config();
 
     // Tab 2 — Suite
@@ -205,6 +212,7 @@ export component AppWindow inherits Window {
             // Tab 0 — Prueba Individual
             if root.tab-activo == 0: TabIndividual {
                 configs-lista           <=> root.configs-lista;
+                configs-detalles        <=> root.configs-detalles;
                 config-idx              <=> root.config-idx;
                 url-base                <=> root.url-base;
                 iteraciones             <=> root.iteraciones;
@@ -219,7 +227,12 @@ export component AppWindow inherits Window {
                 descripcion             <=> root.descripcion;
                 headers-json            <=> root.headers-json;
                 body-json               <=> root.body-json;
+                curl-input              <=> root.curl-input;
+                import-estado             <=> root.import-estado;
+                import-ok                 <=> root.import-ok;
                 cargar-config(i)        => { root.cargar-config(i); }
+                importar-curl()         => { root.importar-curl(); }
+                importar-postman()      => { root.importar-postman(); }
                 seleccionar-dir-salida()  => { root.seleccionar-dir-salida(); }
                 seleccionar-dir-remota()  => { root.seleccionar-dir-remota(); }
             }
@@ -232,6 +245,9 @@ export component AppWindow inherits Window {
                 url-base               <=> root.url-base;
                 iteraciones            <=> root.iteraciones;
                 peticiones-simultaneas <=> root.peticiones-simultaneas;
+                import-estado          <=> root.import-estado;
+                import-ok              <=> root.import-ok;
+                importar-postman()     => { root.importar-postman(); }
                 suite-agregar()        => { root.suite-agregar(); }
                 suite-editar(i)        => { root.suite-editar(i); }
                 suite-eliminar(i)      => { root.suite-eliminar(i); }
@@ -313,9 +329,11 @@ export component AppWindow inherits Window {
                     pulsado() => { root.guardar-config(); }
                 }
                 if root.tab-activo == 0: AppButton {
-                    texto:     root.ejecutando ? "⏹ CANCELAR" : "▶ EJECUTAR";
-                    primario:  true;
-                    width:     130px;
+                    texto:      root.cancelando ? "⏹ CANCELANDO…"
+                                : (root.ejecutando ? "⏹ CANCELAR" : "▶ EJECUTAR");
+                    primario:   true;
+                    habilitado: !root.cancelando;
+                    width:      130px;
                     pulsado() => {
                         if (root.ejecutando) { root.cancelar(); }
                         else { root.ejecutar-individual(); }
@@ -330,9 +348,11 @@ export component AppWindow inherits Window {
                     pulsado() => { root.guardar-config(); }
                 }
                 if root.tab-activo == 1: AppButton {
-                    texto:     root.ejecutando ? "⏹ CANCELAR" : "▶ EJECUTAR SUITE";
-                    primario:  true;
-                    width:     150px;
+                    texto:      root.cancelando ? "⏹ CANCELANDO…"
+                                : (root.ejecutando ? "⏹ CANCELAR" : "▶ EJECUTAR SUITE");
+                    primario:   true;
+                    habilitado: !root.cancelando;
+                    width:      150px;
                     pulsado() => {
                         if (root.ejecutando) { root.cancelar(); }
                         else { root.ejecutar-suite(); }

@@ -9,6 +9,7 @@ import {
 export component TabIndividual inherits Rectangle {
     // ── Configuraciones guardadas ────────────────────────────────────
     in-out property <[string]> configs-lista:        [];
+    in-out property <[string]> configs-detalles:     [];
     in-out property <int>      config-idx:           -1;
 
     // ── Parámetros generales ─────────────────────────────────────────
@@ -28,8 +29,15 @@ export component TabIndividual inherits Rectangle {
     in-out property <string>   headers-json:         "{}";
     in-out property <string>   body-json:            "{}";
 
+    // ── Importar curl ────────────────────────────────────────────────
+    in-out property <string>   curl-input:           "";
+    in-out property <string>   import-estado:          "";
+    in-out property <bool>     import-ok:              false;
+
     // ── Callbacks hacia Rust ─────────────────────────────────────────
     callback cargar-config(int);
+    callback importar-curl();
+    callback importar-postman();
     callback seleccionar-dir-salida();
     callback seleccionar-dir-remota();
 
@@ -58,6 +66,7 @@ export component TabIndividual inherits Rectangle {
                 AppSelect {
                     etiqueta:      "Cargar preset guardado";
                     opciones:      root.configs-lista;
+                    detalles:      root.configs-detalles;
                     indice-actual <=> root.config-idx;
                     horizontal-stretch: 1;
                     seleccionado(idx, _val) => { root.cargar-config(idx); }
@@ -71,6 +80,53 @@ export component TabIndividual inherits Rectangle {
                     font-size:          11px;
                     font-weight:        700;
                     vertical-alignment: center;
+                }
+            }
+        }
+
+        // ── Card ancha: Importar curl o colección Postman ────────────
+        AppCard {
+            titulo:  "IMPORTAR";
+            height:  176px;
+
+            HorizontalLayout {
+                spacing: 10px;
+
+                AppInput {
+                    valor <=>           root.curl-input;
+                    multilinea:         true;
+                    placeholder:        "curl 'https://api.midominio.com/v1/login' \\\n  -X POST \\\n  -H 'Content-Type: application/json' \\\n  -d '{ \"email\": \"user@mail.com\", \"password\": \"secret\" }'";
+                    horizontal-stretch: 1;
+                }
+
+                VerticalLayout {
+                    spacing:   5px;
+                    alignment: start;
+
+                    AppButton {
+                        texto:    "IMPORTAR CURL";
+                        primario: true;
+                        width:    140px;
+                        pulsado() => { root.importar-curl(); }
+                    }
+                    AppButton {
+                        texto:    "POSTMAN…";
+                        primario: false;
+                        width:    140px;
+                        pulsado() => { root.importar-postman(); }
+                    }
+                    Text {
+                        text:        root.import-estado == ""
+                                     ? "// pega un curl, o abrí\n// una colección Postman"
+                                     : root.import-estado;
+                        color:       root.import-estado == "" ? Tema.comentario
+                                     : (root.import-ok ? Tema.col-post : Tema.col-delete);
+                        font-family: "Courier New";
+                        font-size:   10px;
+                        font-weight: 700;
+                        width:       140px;
+                        wrap:        word-wrap;
+                    }
                 }
             }
         }
@@ -92,6 +148,7 @@ export component TabIndividual inherits Rectangle {
                     AppInput {
                         etiqueta: "URL BASE";
                         valor <=> root.url-base;
+                        placeholder: "https://api.midominio.com";
                     }
 
                     // Fila: iteraciones / simultáneas / timeout
@@ -200,17 +257,20 @@ export component TabIndividual inherits Rectangle {
                     AppInput {
                         etiqueta: "ENDPOINT";
                         valor <=> root.endpoint;
+                        placeholder: "/api/v1/users?active=true";
                     }
 
                     AppInput {
                         etiqueta: "DESCRIPCIÓN";
                         valor <=> root.descripcion;
+                        placeholder: "Ej: Login de usuario";
                     }
 
                     AppInput {
                         etiqueta:   "HEADERS (JSON)";
                         valor <=>   root.headers-json;
                         multilinea: true;
+                        placeholder: "{\n  \"Content-Type\": \"application/json\",\n  \"Authorization\": \"Bearer <token>\"\n}";
                     }
 
                     AppInput {
@@ -219,6 +279,7 @@ export component TabIndividual inherits Rectangle {
                         multilinea: true;
                         // Deshabilitado si el método es GET (índice 0)
                         habilitado: root.metodo-idx != 0;
+                        placeholder: "{\n  \"email\": \"user@mail.com\",\n  \"password\": \"secret\"\n}";
                     }
 
                     Rectangle { vertical-stretch: 1; background: transparent; }

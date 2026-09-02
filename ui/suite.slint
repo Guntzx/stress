@@ -17,6 +17,11 @@ export component TabSuite inherits Rectangle {
     in-out property <string> peticiones-simultaneas: "1";
 
     // ── Callbacks hacia Rust ─────────────────────────────────────────
+    // Import compartido con el tab individual
+    in-out property <string> import-estado: "";
+    in-out property <bool>   import-ok:     false;
+
+    callback importar-postman();
     callback suite-agregar();
     callback suite-editar(int);
     callback suite-eliminar(int);
@@ -62,6 +67,30 @@ export component TabSuite inherits Rectangle {
                     etiqueta:           "URL BASE";
                     valor <=>           root.url-base;
                     horizontal-stretch: 1;
+                }
+
+                VerticalLayout {
+                    alignment: end;
+                    AppButton {
+                        texto:    "POSTMAN…";
+                        primario: false;
+                        width:    130px;
+                        pulsado() => { root.importar-postman(); }
+                    }
+                }
+
+                Text {
+                    text:               root.import-estado == ""
+                                        ? "// colección + entorno\n// en un solo paso"
+                                        : root.import-estado;
+                    color:              root.import-estado == "" ? Tema.comentario
+                                        : (root.import-ok ? Tema.col-post : Tema.col-delete);
+                    font-family:        "Courier New";
+                    font-size:          10px;
+                    font-weight:        700;
+                    width:              190px;
+                    wrap:               word-wrap;
+                    vertical-alignment: center;
                 }
             }
         }
